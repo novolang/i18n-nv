@@ -1,0 +1,208 @@
+// i18nbundle_tests.nv — the resolution that cannot fail.
+//
+// RED ON PURPOSE: every body under `src/` is a `todo()`, so every
+// assertion here reaches `not implemented: i18n-nv.<module>.<fn>`.
+//
+// THE VECTORS ARE `fluent-rs`'s `FluentBundle` tests: the same
+// messages, the same arguments, the same error list. The isolation
+// cases are Fluent's `set_use_isolating`, and the chain cases are the
+// behaviour `fluent-resmgr` gives an application with several bundles.
+//
+// THE ASSERTION THIS SUITE EXISTS FOR: EVERY CASE BELOW PRODUCES TEXT.
+// A missing variable, a missing message, a missing locale, a cyclic
+// reference — all of them answer something a person can be shown and a
+// list saying what was wrong. Nothing here has a failure path, and the
+// tests are written to make that impossible to regress.
+
+use std.test
+use std.list
+use std.str
+use ftlparse
+use i18nbundle
+
+fn en_bundle(ftl: Str) -> i18nbundle.I18nBundle
+    let r = ftlparse.parse(ftl)
+    i18nbundle.with_resource(
+        i18nbundle.bundle("en", i18nbundle.test_options("en")), r.0)
+
+@test
+fn test_the_ordinary_case_is_text_and_no_errors() [io]
+    let b = en_bundle("hello = Hello, { \$name }!\n")
+    let out = i18nbundle.format(b, "hello", [I18nArgStr("name", "Klaus")])
+
+    test.case("the text is the message with its placeable filled in")
+    test.assert(out.text == "Hello, Klaus!")
+
+    test.case("and nothing went wrong")
+    test.assert(i18nbundle.is_clean(out))
+    test.assert(list.len(out.errors) == 0)
+
+    test.case("has_message answers without resolving")
+    test.assert(i18nbundle.has_message(b, "hello"))
+    test.assert(not i18nbundle.has_message(b, "goodbye"))
+
+    test.case("message_ids lists what a bundle can resolve")
+    test.assert(i18nbundle.message_ids(b) == ["hello"])
+
+@test
+fn test_a_missing_variable_renders_visibly_and_reports() [io]
+    let b = en_bundle("hello = Hello, { \$name }!\n")
+    let out = i18nbundle.format(b, "hello", [])
+
+    test.case("THE TEXT IS STILL SOMETHING A PERSON CAN BE SHOWN")
+    test.assert(str.index(out.text, "Hello") != None)
+
+    test.case("with the missing placeable visible rather than silently empty")
+    test.assert(str.index(out.text, "name") != None)
+
+    test.case("and the error names both the message and the variable")
+    test.assert(list.len(out.errors) == 1)
+    match out.errors[0]
+        I18nMissingVariable(id, name) =>
+            test.assert(id == "hello")
+            test.assert(name == "name")
+        _                             => test.assert(false)
+
+    test.case("an argument of the wrong kind is its own error, not a crash")
+    let n = en_bundle("count = You have { NUMBER(\$n) }\n")
+    let wrong = i18nbundle.format(n, "count", [I18nArgStr("n", "seven")])
+    match wrong.errors[0]
+        I18nWrongArgType(_, _, _) => test.assert(true)
+        _                         => test.assert(false)
+
+@test
+fn test_a_missing_message_renders_its_own_id() [io]
+    let b = en_bundle("hello = Hi\n")
+    let out = i18nbundle.format(b, "goodbye", [])
+
+    test.case("the id is the text, which is ugly and visible and points at the bug")
+    test.assert(out.text == "goodbye")
+
+    test.case("and the error says which id")
+    match out.errors[0]
+        I18nMissingMessage(id) => test.assert(id == "goodbye")
+        _                      => test.assert(false)
+
+    test.case("an attribute that is not there is a different error from a message that is not")
+    let a = i18nbundle.format_attribute(b, "hello", "aria-label", [])
+    match a.errors[0]
+        I18nMissingAttribute(id, attr) =>
+            test.assert(id == "hello")
+            test.assert(attr == "aria-label")
+        _                              => test.assert(false)
+
+@test
+fn test_a_cycle_is_reported_rather_than_followed() [io]
+    let b = en_bundle("a = see { b }\nb = see { a }\n")
+    let out = i18nbundle.format(b, "a", [])
+
+    test.case("IT TERMINATES — that is the assertion")
+    test.assert(str.len(out.text) > 0)
+
+    test.case("and says which reference closed the loop")
+    var saw_cycle = false
+    for e in out.errors
+        match e
+            I18nCyclicReference(_, _) =>
+                saw_cycle = true
+            _                         =>
+                pass
+    test.assert(saw_cycle)
+
+    test.case("a reference to a message that does not exist is its own error")
+    let missing = en_bundle("a = see { nowhere }\n")
+    match i18nbundle.format(missing, "a", []).errors[0]
+        I18nMissingReference(_, target) => test.assert(target == "nowhere")
+        _                               => test.assert(false)
+
+    test.case("and an unknown function is tolerated — a newer file read by an older program")
+    let fn_call = en_bundle("a = { FUTURE(\$x) }\n")
+    let out2 = i18nbundle.format(fn_call, "a", [I18nArgInt("x", 1)])
+    test.assert(str.len(out2.text) > 0)
+    match out2.errors[0]
+        I18nUnknownFunction(_, name) => test.assert(name == "FUTURE")
+        _                            => test.assert(false)
+
+@test
+fn test_a_chain_falls_back_and_says_where_it_landed() [io]
+    let da = i18nbundle.with_resource(
+        i18nbundle.bundle("da", i18nbundle.test_options("da")),
+        ftlparse.parse("hello = Hej\n").0)
+    let en = en_bundle("hello = Hello\ngoodbye = Goodbye\n")
+    let c = i18nbundle.chain([da, en])
+
+    test.case("the first bundle that has the message answers")
+    test.assert(i18nbundle.format_in(c, "hello", []).text == "Hej")
+
+    test.case("A MESSAGE MISSING FROM da COMES OUT IN en — without a special case anywhere")
+    let fell = i18nbundle.format_in(c, "goodbye", [])
+    test.assert(fell.text == "Goodbye")
+
+    test.case("answering_bundle says which one did, because the question gets asked")
+    test.assert(i18nbundle.answering_bundle(c, "hello") == 0)
+    test.assert(i18nbundle.answering_bundle(c, "goodbye") == 1)
+    test.assert(i18nbundle.answering_bundle(c, "nowhere") == -1)
+
+    test.case("missing from EVERY bundle is a different error from missing from one")
+    let nowhere = i18nbundle.format_in(c, "nowhere", [])
+    test.assert(nowhere.text == "nowhere")
+    match nowhere.errors[0]
+        I18nMissingEverywhere(id) => test.assert(id == "nowhere")
+        _                         => test.assert(false)
+
+    test.case("and an attribute resolves along the chain too")
+    test.assert(str.len(i18nbundle.format_attribute_in(c, "hello", "x", []).text) > 0)
+
+@test
+fn test_bidi_isolation_is_on_by_default_and_off_only_for_a_test() [io]
+    test.case("the default options isolate")
+    test.assert(i18nbundle.default_options("en").use_isolating)
+
+    test.case("the test options do not, which is why every case here uses them")
+    test.assert(not i18nbundle.test_options("en").use_isolating)
+
+    test.case("isolating wraps a placeable in the two invisible marks")
+    let opts = i18nbundle.default_options("en")
+    let b = i18nbundle.with_resource(i18nbundle.bundle("en", opts),
+                                     ftlparse.parse("hi = Hi { \$n }\n").0)
+    let out = i18nbundle.format(b, "hi", [I18nArgStr("n", "Klaus")])
+    test.assert(str.index(out.text, "\u{2068}") != None)
+    test.assert(str.index(out.text, "\u{2069}") != None)
+
+    test.case("and the literal text around it is untouched")
+    test.assert(str.index(out.text, "Hi ") != None)
+
+@test
+fn test_the_buffer_form_is_what_a_server_rendering_a_page_wants() [io]
+    let b = en_bundle("hello = Hello\n")
+    let seed: [u8] = [62]
+
+    test.case("one buffer for the whole response, not a string per message")
+    let out = i18nbundle.format_into(seed, b, "hello", [])
+    test.assert(out.0[0] == 62)
+    test.assert(list.len(out.1) == 0)
+
+    test.case("and the same along a chain")
+    let c = i18nbundle.chain([b])
+    let out2 = i18nbundle.format_into_in(seed, c, "hello", [])
+    test.assert(out2.0[0] == 62)
+
+@test
+fn test_the_build_step_checks_compare_two_bundles() [io]
+    let reference = en_bundle("a = A\nb = B\nc = Hi { \$username }\n")
+    let da = i18nbundle.with_resource(
+        i18nbundle.bundle("da", i18nbundle.test_options("da")),
+        ftlparse.parse("a = A\nc = Hej { \$userName }\n").0)
+
+    test.case("missing_against is the translation gap, as a list")
+    test.assert(i18nbundle.missing_against(da, reference) == ["b"])
+
+    test.case("VARIABLE DRIFT IS THE OTHER HALF — a renamed variable, caught before release")
+    test.assert(i18nbundle.variable_drift(da, reference) == ["c"])
+
+    test.case("a bundle compared against itself has neither")
+    test.assert(list.len(i18nbundle.missing_against(reference, reference)) == 0)
+    test.assert(list.len(i18nbundle.variable_drift(reference, reference)) == 0)
+
+    test.case("and the error type prints itself, for a log line")
+    test.assert(str.len(I18nMissingVariable("c", "username").message()) > 0)

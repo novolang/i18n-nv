@@ -1,0 +1,313 @@
+// i18nplural_tests.nv — the operands, the locales, and the formatting
+// the two have to agree on.
+//
+// RED ON PURPOSE: every body under `src/` is a `todo()`, so every
+// assertion here reaches `not implemented: i18n-nv.<module>.<fn>`.
+//
+// THE VECTORS ARE CLDR's OWN `plurals.xml` sample sets, locale by
+// locale, and the operand definitions from the plural-rules
+// specification. The negotiation cases are BCP 47's matching rules and
+// RFC 9110 § 12.5.4's `Accept-Language`.
+//
+// THE ASSERTION THIS SUITE EXISTS FOR: `1` is `one` in English and
+// `1.0` is `other`. Same value, different category, because the
+// category is a function of the DIGITS and not of the number — which
+// is what almost every `plural(n)` API gets wrong.
+
+use std.test
+use std.list
+use std.str
+use i18nplural
+use i18nfmt
+use i18nlocale
+use civil
+use std.bytes
+
+// A civil date, unwrapped: every date this suite names is a real one,
+// and a test that matched on the Result at every call site would say
+// less about the formatter than about calendar-nv's constructor.
+fn a_date(y: Int, m: Int, d: Int) -> civil.CivilDate
+    match civil.date(y, m, d)
+        Ok(v)  => v
+        Err(_) => civil.date_from_epoch_day(0)
+
+fn en_cardinal() -> i18nplural.I18nPluralRule
+    i18nplural.rules_for("en", I18nCardinal)
+
+@test
+fn test_the_category_is_a_function_of_the_digits_not_the_value() [io]
+    let r = en_cardinal()
+
+    test.case("1 is one")
+    match i18nplural.category_of(r, i18nplural.operands_of_int(1))
+        I18nOne => test.assert(true)
+        _       => test.assert(false)
+
+    test.case("2 is other")
+    match i18nplural.category_of(r, i18nplural.operands_of_int(2))
+        I18nOther => test.assert(true)
+        _         => test.assert(false)
+
+    test.case("AND 1.0 IS OTHER — same value, different category, because v is 1")
+    match i18nplural.category_of(r, i18nplural.operands_of(1.0, 1))
+        I18nOther => test.assert(true)
+        _         => test.assert(false)
+
+    test.case("the operands say why: v is the count of VISIBLE fraction digits")
+    let ops = i18nplural.operands_of(1.0, 1)
+    test.assert(ops.i == 1)
+    test.assert(ops.v == 1)
+    test.assert(ops.f == 0)
+    test.assert(ops.t == 0)
+
+    test.case("an integer has none of them, whatever it is printed under")
+    let int_ops = i18nplural.operands_of_int(1)
+    test.assert(int_ops.v == 0)
+    test.assert(int_ops.c == 0)
+    test.assert(not int_ops.negative)
+
+    test.case("1.03 has v of 2, f of 3, and t of 3")
+    let frac = i18nplural.operands_of(1.03, 2)
+    test.assert(frac.v == 2)
+    test.assert(frac.f == 3)
+    test.assert(frac.t == 3)
+
+    test.case("and a negative value keeps the sign out of n, which is the absolute value")
+    let neg = i18nplural.operands_of_int(0 - 3)
+    test.assert(neg.n == 3)
+    test.assert(neg.negative)
+
+@test
+fn test_the_bridge_is_what_makes_the_selector_and_the_formatter_agree() [io]
+    test.case("operands_of takes the FORMAT the number will be printed under")
+    let f = i18nfmt.decimal_format("en", 1)
+    let ops = i18nfmt.operands_of(1.0, f)
+    test.assert(ops.v == 1)
+
+    test.case("so a message formatted to one decimal place says files, not file")
+    match i18nplural.category_of(en_cardinal(), ops)
+        I18nOther => test.assert(true)
+        _         => test.assert(false)
+
+    test.case("and the integer format gives the integer answer for the same value")
+    let intf = i18nfmt.integer_format("en")
+    match i18nplural.category_of(en_cardinal(), i18nfmt.operands_of_int(1, intf))
+        I18nOne => test.assert(true)
+        _       => test.assert(false)
+
+@test
+fn test_the_shipped_locales_are_five_distinct_rule_shapes() [io]
+    test.case("the list is data, so the README cannot drift from it")
+    let shipped = i18nplural.shipped_locales()
+    test.assert(list.len(shipped) >= 6)
+
+    test.case("English and Danish have two categories")
+    test.assert(list.len(i18nplural.rules_for("en", I18nCardinal).categories) == 2)
+    test.assert(list.len(i18nplural.rules_for("da", I18nCardinal).categories) == 2)
+
+    test.case("FRENCH PUTS ZERO IN one — the shape a two-form design gets wrong")
+    match i18nplural.category_of(i18nplural.rules_for("fr", I18nCardinal),
+                                 i18nplural.operands_of_int(0))
+        I18nOne => test.assert(true)
+        _       => test.assert(false)
+
+    test.case("and English does not")
+    match i18nplural.category_of(en_cardinal(), i18nplural.operands_of_int(0))
+        I18nOther => test.assert(true)
+        _         => test.assert(false)
+
+    test.case("Japanese has one category, and has_plural_forms says so")
+    test.assert(list.len(i18nplural.rules_for("ja", I18nCardinal).categories) == 1)
+    test.assert(not i18nplural.has_plural_forms("ja"))
+    test.assert(i18nplural.has_plural_forms("en"))
+
+    test.case("ordinals are a second rule set — English has four where cardinals have two")
+    test.assert(list.len(i18nplural.rules_for("en", I18nOrdinal).categories) == 4)
+
+@test
+fn test_a_locale_with_no_rules_falls_back_and_says_it_did() [io]
+    test.case("rules_for is NEVER None — a caller does not handle an option per call site")
+    let unknown = i18nplural.rules_for("qq", I18nCardinal)
+    test.assert(list.len(unknown.categories) == 2)
+
+    test.case("and rule_is_fallback is the check a build step makes")
+    test.assert(i18nplural.rule_is_fallback(unknown))
+    test.assert(not i18nplural.rule_is_fallback(en_cardinal()))
+
+    test.case("a region falls back to its language's rules without being a fallback")
+    test.assert(not i18nplural.rule_is_fallback(i18nplural.rules_for("en-GB",
+                                                                     I18nCardinal)))
+
+@test
+fn test_the_category_names_are_the_keys_a_selector_is_written_with() [io]
+    test.case("the CLDR spellings, both ways")
+    test.assert(i18nplural.category_name(I18nOne) == "one")
+    test.assert(i18nplural.category_name(I18nOther) == "other")
+    match i18nplural.category_named("few")
+        Some(_) => test.assert(true)
+        None    => test.assert(false)
+
+    test.case("a variant key that is not a category is not an error — FTL allows any identifier")
+    match i18nplural.category_named("masculine")
+        Some(_) => test.assert(false)
+        None    => test.assert(true)
+
+    test.case("AN EXPLICIT NUMERIC KEY IS COMPARED FIRST AND EXACTLY")
+    test.assert(i18nplural.explicit_match("0", i18nplural.operands_of_int(0)))
+    test.assert(not i18nplural.explicit_match("0", i18nplural.operands_of_int(1)))
+
+    test.case("which is how a translator writes `no files` in a language with no zero category")
+    test.assert(not i18nplural.explicit_match("one", i18nplural.operands_of_int(1)))
+
+@test
+fn test_a_locale_is_a_tag_and_a_chain_is_never_empty() [io]
+    test.case("the subtags are parsed, not split on a hyphen")
+    match i18nlocale.parse("zh-Hans-CN")
+        None    => test.assert(false)
+        Some(l) =>
+            test.assert(l.language == "zh")
+            test.assert(l.script == "Hans")
+            test.assert(l.region == "CN")
+
+    test.case("canonical is the map key; source is what the user typed")
+    match i18nlocale.parse("PT-br")
+        None    => test.assert(false)
+        Some(l) =>
+            test.assert(i18nlocale.canonical(l) == "pt-BR")
+            test.assert(l.source == "PT-br")
+
+    test.case("truncation drops the most specific subtag, script-aware")
+    match i18nlocale.parse("zh-Hans-CN")
+        None    => test.assert(false)
+        Some(l) =>
+            match i18nlocale.truncate_tag(l)
+                None    => test.assert(false)
+                Some(t) => test.assert(i18nlocale.canonical(t) == "zh-Hans")
+
+    test.case("THE DEFAULT IS ALWAYS LAST, so resolution always has a bundle to ask")
+    let chain = i18nlocale.negotiate(["da-DK", "de"], ["da", "de"], "en",
+                                     I18nMatchLanguage)
+    test.assert(chain[list.len(chain) - 1] == "en")
+
+    test.case("even when nothing matched at all")
+    let none_matched = i18nlocale.negotiate(["xx"], ["da"], "en", I18nMatchExact)
+    test.assert(list.len(none_matched) >= 1)
+    test.assert(none_matched[0] == "en")
+
+    test.case("chain_for is the one-locale case without building a request list")
+    test.assert(i18nlocale.chain_for("da-DK", ["da", "en"], "en",
+                                     I18nMatchLanguage)[0] == "da")
+
+@test
+fn test_matching_is_a_policy_because_zh_Hans_and_zh_Hant_are_not_interchangeable() [io]
+    let br = i18nlocale.parse("pt-BR") ?? i18nlocale.undetermined()
+    let pt = i18nlocale.parse("pt") ?? i18nlocale.undetermined()
+    let ptpt = i18nlocale.parse("pt-PT") ?? i18nlocale.undetermined()
+
+    test.case("exact matches only itself")
+    test.assert(not i18nlocale.matches(br, pt, I18nMatchExact))
+
+    test.case("language matches the bare language")
+    test.assert(i18nlocale.matches(br, pt, I18nMatchLanguage))
+
+    test.case("but NOT a different region — some Portuguese is not always better than none")
+    test.assert(not i18nlocale.matches(br, ptpt, I18nMatchLanguage))
+
+    test.case("which is what I18nMatchAny is for, named rather than default")
+    test.assert(i18nlocale.matches(br, ptpt, I18nMatchAny))
+
+    test.case("und is a locale, and a named constructor rather than a string literal")
+    test.assert(i18nlocale.undetermined().language == "und")
+
+@test
+fn test_accept_language_drops_a_refusal_rather_than_ranking_it_low() [io]
+    test.case("the header is ordered by quality, best first")
+    let langs = i18nlocale.parse_accept_language("da, en;q=0.8, de;q=0.9")
+    test.assert(langs[0] == "da")
+    test.assert(langs[1] == "de")
+
+    test.case("AND q=0 IS A REFUSAL — excluded, not ranked last")
+    let refused = i18nlocale.parse_accept_language("da, en;q=0")
+    test.assert(list.len(refused) == 1)
+    test.assert(refused[0] == "da")
+
+    test.case("a wildcard is kept as one, for a caller that wants to know")
+    test.assert(list.len(i18nlocale.parse_accept_language("*")) == 1)
+
+@test
+fn test_rtl_is_derived_from_the_script_and_the_set_is_named() [io]
+    test.case("Hebrew and Arabic are right to left")
+    test.assert(i18nlocale.is_rtl(i18nlocale.parse("he") ?? i18nlocale.undetermined()))
+    test.assert(i18nlocale.is_rtl(i18nlocale.parse("ar-EG") ?? i18nlocale.undetermined()))
+
+    test.case("and the script subtag wins where there is one")
+    test.assert(not i18nlocale.is_rtl(i18nlocale.parse("az-Latn")
+                                      ?? i18nlocale.undetermined()))
+
+    test.case("English is not")
+    test.assert(not i18nlocale.is_rtl(i18nlocale.parse("en") ?? i18nlocale.undetermined()))
+
+@test
+fn test_the_separators_are_data_because_they_are_not_all_ascii() [io]
+    test.case("English groups with a comma and points with a full stop")
+    let en = i18nfmt.en_symbols()
+    test.assert(en.group == ",")
+    test.assert(en.decimal == ".")
+
+    test.case("German swaps them")
+    let de = i18nfmt.symbols_for("de")
+    test.assert(de.group == ".")
+    test.assert(de.decimal == ",")
+
+    test.case("AND FRENCH GROUPS WITH U+202F, WHICH IS NOT A SPACE")
+    test.assert(i18nfmt.symbols_for("fr").group == "\u{202F}")
+
+    test.case("a locale this release does not ship falls back to English's")
+    test.assert(i18nfmt.symbols_for("qq").group == en.group)
+
+    test.case("Indian English groups three then TWO")
+    let indian = i18nfmt.integer_format("en-IN")
+    test.assert(indian.primary_group == 3)
+    test.assert(indian.secondary_group == 2)
+
+    test.case("and the shipped list is published beside the plural one, because they differ")
+    test.assert(list.len(i18nfmt.shipped_locales()) >= 6)
+
+@test
+fn test_numbers_and_dates_are_delegated_and_the_clock_is_the_callers() [io]
+    let f = i18nfmt.integer_format("de")
+    let empty: [u8] = []
+
+    test.case("an integer is grouped with the locale's own separator")
+    let out = i18nfmt.int_into(empty, 1234567, f)
+    test.assert(str.index(bytes.byte_list_to_str(out), ".") != None)
+
+    test.case("a float uses the locale's decimal point")
+    let df = i18nfmt.decimal_format("de", 2)
+    let fout = i18nfmt.float_into(empty, 1.5, df)
+    test.assert(str.index(bytes.byte_list_to_str(fout), ",") != None)
+
+    test.case("a radix number has NO locale — a hexadecimal id is not grouped")
+    let hex = i18nfmt.int_radix_into(empty, 255, HexUpper)
+    test.assert(bytes.byte_list_to_str(hex) == "FF")
+
+    test.case("a date formats from a CivilDateTime the caller passed in")
+    let d = a_date(2026, 9, 11)
+    let s = i18nfmt.date_symbols_for("en")
+    let dout = i18nfmt.date_into(empty, d, I18nDateIso, s)
+    test.assert(bytes.byte_list_to_str(dout) == "2026-09-11")
+
+    test.case("the weekday list is MONDAY FIRST, and first_weekday says where a week starts")
+    test.assert(list.len(s.weekdays) == 7)
+    test.assert(i18nfmt.weekday_name(d, s, false) == "Friday")
+    test.assert(i18nfmt.month_name(d, s, true) == "Sep")
+
+    test.case("a datetime takes both styles")
+    let dt = civil.datetime(d, civil.midnight())
+    test.assert(list.len(i18nfmt.datetime_into(empty, dt, I18nDateShort,
+                                               I18nTimeShort, s)) > 0)
+
+    test.case("AND A RELATIVE TIME TAKES BOTH INSTANTS — there is no clock in this package")
+    let later = civil.datetime(a_date(2026, 9, 14), civil.midnight())
+    let rel = i18nfmt.relative_into(empty, dt, later, "en", s)
+    test.assert(str.index(bytes.byte_list_to_str(rel), "3") != None)

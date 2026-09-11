@@ -1,0 +1,201 @@
+// i18nplural.nv — the CLDR plural categories, and the operands they
+// are actually a function of.
+//
+// Every body here is a `todo()`; the signatures are the design.
+//
+// **A PLURAL CATEGORY IS NOT A FUNCTION OF A NUMBER.** It is a
+// function of the number's DECIMAL REPRESENTATION, and almost every
+// library that offers `plural(n)` is wrong about it.
+//
+// CLDR defines six operands, and three of them are about the digits
+// rather than the value:
+//
+//   n  the absolute value
+//   i  the integer part
+//   v  the COUNT of visible fraction digits
+//   f  the visible fraction digits, as an integer
+//   t  the same with trailing zeros removed
+//   c  the compact exponent
+//
+// In English, `1` is `one` and `1.0` is `other` — same value,
+// different category, because `v` is 0 in the first and 1 in the
+// second. A progress indicator formatted to one decimal place says
+// "1.0 files" and not "1.0 file", and a library that took a `Float`
+// could not know which.
+//
+// So the category is computed from `I18nOperands`, and
+// `i18nfmt.operands_of` is what builds one — from the same
+// `NumFormat` the formatter will use. That is the whole reason
+// `i18nbundle` passes one format to both: the number a person reads
+// and the category the selector picks MUST come from the same
+// formatting, or a message says "1.0 file".
+//
+// THE RULES ARE DATA, NOT CODE. `I18nPluralRule` is a value, the
+// shipped locales' rules are rows, and `rules_for` is a lookup. Adding
+// a locale is adding a row and a test — no recompilation of anything
+// else, no branch in a `match` that grows with the world. The README
+// says exactly what a row is.
+//
+// SHIPPED AT 0.1.0: en, da, de, fr, es, ja. Six locales that between
+// them cover five of CLDR's distinct rule shapes — two categories
+// (en, da, de, es), two with a different `one` (fr, where 0 is `one`),
+// and one with no plural distinction at all (ja). A seventh worth
+// having early is `pl`, which has `few` and `many` and is the case
+// that breaks a two-form design; `ar` with all six is the extreme, and
+// the README says both.
+//
+// ORDINALS ARE A SECOND SET OF RULES. `1st`, `2nd`, `3rd`, `4th` are
+// four categories in English where cardinals have two, and CLDR ships
+// them separately. A library with one rule set cannot spell an
+// ordinal, so `I18nPluralKind` is a parameter rather than an
+// assumption.
+
+// The six CLDR plural categories. Not every locale uses all of them;
+// English uses two and Japanese one.
+pub enum I18nCategory
+    I18nZero
+    I18nOne
+    I18nTwo
+    I18nFew
+    I18nMany
+    // Every locale has this one, and it is what a selector's `*[other]`
+    // default arm is. That is why resolution is total.
+    I18nOther
+
+// Cardinal or ordinal — two different rule sets for the same locale.
+pub enum I18nPluralKind
+    // `1 file`, `2 files`.
+    I18nCardinal
+    // `1st`, `2nd`, `3rd`, `4th`.
+    I18nOrdinal
+
+// The CLDR plural operands, computed from a FORMATTED number.
+//
+// See the module comment: three of these are about the digits a
+// person will see, not about the value, and that is why they are a
+// value rather than arguments derived inside a `plural(n)` call.
+pub struct I18nOperands
+    // `n` — the absolute value, integer part only when `v` is 0.
+    n: Int
+    // `i` — the integer part.
+    i: Int
+    // `v` — how many fraction digits are VISIBLE. The operand nobody
+    // models, and the one that makes `1` and `1.0` different
+    // categories.
+    v: Int
+    // `f` — the visible fraction digits as an integer: 3 for `1.03`
+    // with `v` of 2.
+    f: Int
+    // `t` — `f` with trailing zeros removed.
+    t: Int
+    // `c` — the compact decimal exponent, 0 for an ordinary number.
+    c: Int
+    // Whether the value was negative. Not a CLDR operand — `n` is the
+    // absolute value — and carried because a caller that wants to
+    // select on sign has nowhere else to read it.
+    negative: Bool
+
+// One locale's plural rules, as data.
+//
+// A rule is a locale, a kind, and the ordered list of conditions that
+// name the categories it uses. `I18nOther` is always the last and is
+// never a condition: it is what a number matches when nothing else
+// does, which is what makes the answer total.
+pub struct I18nPluralRule
+    // The canonical locale tag the rule is for.
+    locale: Str
+    kind: I18nPluralKind
+    // The categories this locale uses, in CLDR's order, `I18nOther`
+    // last. A UI showing a translator which arms to write reads this.
+    categories: [I18nCategory]
+
+// The category a number falls in, under a locale's rules.
+//
+// THE CALL A SELECTOR MAKES, and the operands are the argument rather
+// than a number because of everything in the module comment.
+//
+// ```novo
+// use i18nplural
+//
+// let r = i18nplural.rules_for("en", I18nCardinal)
+// match i18nplural.category_of(r, i18nplural.operands_of_int(1))
+//     I18nOne => println("one")
+//     _       => println("other")
+// ```
+pub fn category_of(rule: I18nPluralRule, ops: I18nOperands) -> I18nCategory []
+    todo("i18n-nv.i18nplural.category_of")
+
+// The rules for a locale, falling back the way `i18nlocale` does:
+// `pt-BR` to `pt`, and `und` to English's rules with
+// `rule_is_fallback` true.
+//
+// NEVER `None`. A locale this release has no rules for gets English's
+// two categories, which is wrong for Polish and right for the eleven
+// languages that share English's shape — and a caller that needs to
+// know asks `rule_is_fallback` rather than handling an option at every
+// call site.
+pub fn rules_for(locale: Str, kind: I18nPluralKind) -> I18nPluralRule []
+    todo("i18n-nv.i18nplural.rules_for")
+
+// Whether `rules_for` fell back rather than finding the locale.
+//
+// The check a build step makes: shipping a translation for a locale
+// whose plural rules this release does not have is a bug somebody
+// should see before the release, and it is invisible from the output
+// for every count that happens to land in `other`.
+pub fn rule_is_fallback(rule: I18nPluralRule) -> Bool []
+    todo("i18n-nv.i18nplural.rule_is_fallback")
+
+// Every locale this release ships rules for, canonical tags, sorted.
+//
+// Published so a build step can check its translation set against it,
+// and so the README's list cannot drift from the code.
+pub fn shipped_locales() -> [Str] []
+    todo("i18n-nv.i18nplural.shipped_locales")
+
+// The operands of an integer: `n` and `i` the value, `v`, `f`, `t` and
+// `c` all zero.
+//
+// The common case, and the one that needs no formatter — an integer
+// has no visible fraction digits whatever format it is printed under.
+pub fn operands_of_int(value: Int) -> I18nOperands []
+    todo("i18n-nv.i18nplural.operands_of_int")
+
+// The operands of a number formatted with exactly `fraction_digits`
+// decimal places.
+//
+// The general constructor, for a caller that formats its own numbers.
+// `i18nfmt.operands_of` is the one that takes a `NumFormat` and is
+// guaranteed to agree with what `i18nfmt` will print.
+pub fn operands_of(value: Float, fraction_digits: Int) -> I18nOperands []
+    todo("i18n-nv.i18nplural.operands_of")
+
+// A category's CLDR name: `"one"`, `"other"`. The keys an FTL
+// selector's variants are written with.
+pub fn category_name(c: I18nCategory) -> Str []
+    todo("i18n-nv.i18nplural.category_name")
+
+// The category a CLDR name names, or `None` for a variant key that is
+// not one — which is legal FTL, since a selector's keys may be any
+// identifiers when the selector is not a number.
+pub fn category_named(name: Str) -> ?I18nCategory []
+    todo("i18n-nv.i18nplural.category_named")
+
+// Whether a locale needs more than one plural form at all.
+//
+// False for Japanese, Chinese, Korean, Thai and Vietnamese. The check
+// a translation tool makes before showing a translator six empty boxes
+// for a language that uses one.
+pub fn has_plural_forms(locale: Str) -> Bool []
+    todo("i18n-nv.i18nplural.has_plural_forms")
+
+// The category an EXPLICIT numeric variant key matches, for a
+// selector written `[0] ... [1] ... *[other]`.
+//
+// Explicit keys are compared BEFORE categories and exactly, which is
+// what lets a translator write "no files" for zero in a language whose
+// rules have no `zero` category. The rule is stated here because it is
+// the one place FTL's selector semantics are not obvious from the
+// syntax.
+pub fn explicit_match(key: Str, ops: I18nOperands) -> Bool []
+    todo("i18n-nv.i18nplural.explicit_match")

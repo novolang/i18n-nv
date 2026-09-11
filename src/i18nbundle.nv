@@ -1,0 +1,295 @@
+// i18nbundle.nv — a message id and some arguments, resolved.
+//
+// Every body here is a `todo()`; the signatures are the design.
+//
+// **THE LOAD-BEARING INTERFACE OF THIS PACKAGE IS `I18nResolved`, AND
+// THE LOAD-BEARING FACT IS THAT RESOLUTION NEVER FAILS.**
+//
+//     pub struct I18nResolved
+//         text: Str
+//         errors: [I18nError]
+//
+// Not a `Result`. A localisation defect is a CONTENT defect: a
+// translator referenced `$userName` where the source says `$username`,
+// a message id was renamed and one of nine files was missed, a new
+// locale has no rules for a count. Every one of those ships at three
+// in the morning, in a locale nobody on the team reads, and the
+// correct behaviour is always the same — render the best text
+// available and report what went wrong.
+//
+// An API that answered `Result` makes every call site choose between
+// two wrong things. `unwrap` is a crash in Japanese and nowhere else,
+// which is how a localisation bug becomes an outage. Writing a
+// fallback at the call site means writing one at every call site, and
+// the fallbacks then disagree — some show the id, some show English,
+// some show nothing, and the interface is inconsistent in exactly the
+// locale nobody is looking at. Fluent reached the same design, and
+// `format_pattern`'s error-collecting signature is the reason it is
+// usable in a browser.
+//
+// So `text` is always something a person can be shown. A missing
+// variable renders as `{$name}` with the braces, which is ugly and
+// visible and points at the bug; a missing message renders the id; a
+// message missing from every bundle in the chain renders the id, with
+// `I18nMissingEverywhere`. The errors say which happened, and an
+// application logs them, a test asserts on them, and a build step
+// refuses over them.
+//
+// A BUNDLE IS ONE LOCALE. Fallback is a CHAIN of bundles, and
+// `I18nChain` walks it — which is what makes a message missing from
+// `da` come out in `en` rather than as its own id, without a special
+// case at any call site.
+//
+// BIDI ISOLATION IS ON BY DEFAULT. A placeable is wrapped in U+2068
+// FIRST STRONG ISOLATE and U+2069 POP DIRECTIONAL ISOLATE, which is
+// invisible and which is what stops a Hebrew sentence with an English
+// username in it from rendering with the punctuation in the wrong
+// place. It is a field rather than an assumption only because a test
+// comparing strings wants it off; the README says so, and says that
+// turning it off for production is a bug.
+
+use ftlparse
+use i18nfmt
+use i18nlocale
+use i18nplural
+
+// An argument a caller passes to a message.
+//
+// Four kinds and not a generic value: an FTL placeable can be a
+// string, a number, a date, or another message's value.  Modelling
+// anything past those four would mean modelling a type system that
+// nothing in this package would ever read.
+pub enum I18nArg
+    I18nArgStr(name: Str, value: Str)
+    I18nArgInt(name: Str, value: Int)
+    I18nArgFloat(name: Str, value: Float)
+    // A date argument. `civil.CivilDateTime` is calendar-nv's, so a
+    // caller that holds a date passes it rather than converting.
+    I18nArgDate(name: Str, value: civil.CivilDateTime)
+
+// What went wrong while resolving. Every variant names the message the
+// resolution was for, because an error with no id in it is an error
+// nobody can find.
+pub enum I18nError
+    // The bundle has no message with this id.
+    I18nMissingMessage(id: Str)
+    // No bundle in the chain had it. Distinct from the first because
+    // the two mean different things: one locale missing a message is a
+    // translation gap, and every locale missing it is a bug in the
+    // program.
+    I18nMissingEverywhere(id: Str)
+    // The message has no attribute with this name.
+    I18nMissingAttribute(id: Str, attribute: Str)
+    // A pattern referenced `$name` and the caller passed no such
+    // argument. THE COMMONEST LOCALISATION DEFECT, and the reason
+    // `ftlparse.variables_of` is published for a build step.
+    I18nMissingVariable(id: Str, name: Str)
+    // A pattern referenced `$name` as a number and the caller passed a
+    // string, or the other way round.
+    I18nWrongArgType(id: Str, name: Str, expected: Str)
+    // A message referenced another message that does not exist.
+    I18nMissingReference(id: Str, target: Str)
+    // A cycle: `a` references `b` which references `a`. Detected and
+    // reported rather than followed, so a resolution always
+    // terminates.
+    I18nCyclicReference(id: Str, target: Str)
+    // A pattern called a function that is not a built-in — which is
+    // what a newer FTL file read by an older program looks like.
+    I18nUnknownFunction(id: Str, name: Str)
+    // The selector's value matched no explicit key and no plural
+    // category, so the default arm was taken. Not a failure, and
+    // reported because a translator writing `[1]` and `[2]` with no
+    // `*[other]` reachable is a translation that says the wrong thing
+    // for 3.
+    I18nSelectorFellThrough(id: Str)
+    // The locale's plural rules were not in this release, so English's
+    // were used. See `i18nplural.rule_is_fallback`.
+    I18nPluralRulesMissing(id: Str, locale: Str)
+
+// The one-line message, for a caller logging rather than matching.
+//
+// No `Result` in this package returns an `I18nError`, and the impl
+// exists anyway: an application's log line wants one string per error
+// in `I18nResolved.errors`, and writing that switch at every call site
+// is the same mistake as writing the fallback at every call site.
+//
+// ```novo
+// use i18nbundle
+//
+// println(I18nMissingVariable("hello", "name").message())
+// ```
+impl Error for I18nError
+    // Panics with `not implemented` until the bodies land.
+    fn message(self) -> Str
+        todo("i18n-nv.I18nError.message")
+
+// What a resolution produced.
+//
+// See the module comment: this is the package's load-bearing
+// interface.
+pub struct I18nResolved
+    // ALWAYS SOMETHING A PERSON CAN BE SHOWN. The message with every
+    // placeable this bundle could resolve; a visible marker where one
+    // could not; the id itself when the message was missing entirely.
+    text: Str
+    // Everything that went wrong, in the order it was met. Empty for
+    // the ordinary case.
+    errors: [I18nError]
+
+// How a bundle resolves.
+pub struct I18nBundleOptions
+    // Wrap every placeable in U+2068 and U+2069. ON BY DEFAULT. See
+    // the module comment: turning it off is for a test that compares
+    // strings, and for nothing else.
+    use_isolating: Bool
+    // The number format a `{ $n }` placeable with no explicit
+    // `NUMBER()` call uses — and the format `i18nfmt.operands_of`
+    // computes the plural operands from, so the two agree.
+    number_format: i18nfmt.I18nNumFormat
+    date_symbols: i18nfmt.I18nDateSymbols
+    // How many message references deep a resolution may go before it
+    // is a cycle. Eight; a legitimate FTL file is two or three.
+    max_reference_depth: Int
+
+// One locale's messages.
+pub struct I18nBundle
+    // The canonical locale tag, as `i18nlocale.canonical` spells it.
+    locale: Str
+    resources: [ftlparse.FtlResource]
+    plural_cardinal: i18nplural.I18nPluralRule
+    plural_ordinal: i18nplural.I18nPluralRule
+    options: I18nBundleOptions
+
+// An ordered list of bundles: the fallback chain.
+//
+// A type of its own rather than a `[I18nBundle]` so that `resolve`
+// reads the same at a call site whether the program has one locale or
+// nine, and so that "which bundle answered" has somewhere to live.
+pub struct I18nChain
+    bundles: [I18nBundle]
+
+// The default options for a locale: isolation on, the locale's own
+// number format and date symbols, reference depth 8.
+//
+// ```novo
+// use i18nbundle
+//
+// let o = i18nbundle.default_options("da")
+// println(if o.use_isolating then "isolating" else "plain")
+// ```
+pub fn default_options(locale: Str) -> I18nBundleOptions []
+    todo("i18n-nv.i18nbundle.default_options")
+
+// The same with isolation off — FOR A TEST, and the doc comment is
+// where that is said rather than the name.
+//
+// A test that asserts on a formatted message compares strings, and the
+// isolate marks are invisible characters that make every such
+// assertion fail confusingly. Shipping a UI with these options is a
+// bug, and it is a bug that shows only in a right-to-left locale.
+pub fn test_options(locale: Str) -> I18nBundleOptions []
+    todo("i18n-nv.i18nbundle.test_options")
+
+// An empty bundle for a locale, with that locale's plural rules.
+pub fn bundle(locale: Str, o: I18nBundleOptions) -> I18nBundle []
+    todo("i18n-nv.i18nbundle.bundle")
+
+// A bundle with a resource added.
+//
+// Answers a NEW bundle rather than mutating one, because `[mutate]` is
+// a host effect and this package has none — and because a bundle is
+// then a value a program can hold behind a pointer and swap
+// atomically when a translation reloads.
+pub fn with_resource(b: I18nBundle, r: ftlparse.FtlResource) -> I18nBundle []
+    todo("i18n-nv.i18nbundle.with_resource")
+
+// A chain from bundles, in the order `i18nlocale.negotiate` answered.
+pub fn chain(bundles: [I18nBundle]) -> I18nChain []
+    todo("i18n-nv.i18nbundle.chain")
+
+// Resolve a message in ONE bundle.
+//
+// ```novo
+// use i18nbundle
+// use ftlparse
+//
+// let r = ftlparse.parse("hello = Hello, { \$name }!")
+// let b = i18nbundle.with_resource(
+//     i18nbundle.bundle("en", i18nbundle.test_options("en")), r.0)
+// let out = i18nbundle.format(b, "hello", [I18nArgStr("name", "Klaus")])
+// println(out.text)
+// ```
+pub fn format(b: I18nBundle, id: Str, args: [I18nArg]) -> I18nResolved []
+    todo("i18n-nv.i18nbundle.format")
+
+// Resolve a message's ATTRIBUTE — `login-button.aria-label`.
+pub fn format_attribute(b: I18nBundle, id: Str, attribute: Str, args: [I18nArg]) -> I18nResolved []
+    todo("i18n-nv.i18nbundle.format_attribute")
+
+// Resolve along a fallback chain: the first bundle that has the
+// message answers, and a message no bundle has answers its own id with
+// `I18nMissingEverywhere`.
+//
+// THE CALL AN APPLICATION MAKES.
+pub fn format_in(c: I18nChain, id: Str, args: [I18nArg]) -> I18nResolved []
+    todo("i18n-nv.i18nbundle.format_in")
+
+// The same for an attribute.
+pub fn format_attribute_in(c: I18nChain, id: Str, attribute: Str,
+                           args: [I18nArg]) -> I18nResolved []
+    todo("i18n-nv.i18nbundle.format_attribute_in")
+
+// Resolve into the caller's buffer. The errors come back beside it
+// because they are not bytes.
+//
+// The shape a server rendering a page wants: one buffer for the whole
+// response, and no string per message.
+pub fn format_into(out: [u8], b: I18nBundle, id: Str, args: [I18nArg]) -> ([u8], [I18nError]) []
+    todo("i18n-nv.i18nbundle.format_into")
+
+// The same along a chain.
+pub fn format_into_in(out: [u8], c: I18nChain, id: Str, args: [I18nArg]) -> ([u8], [I18nError]) []
+    todo("i18n-nv.i18nbundle.format_into_in")
+
+// Whether a bundle has a message with this id — without resolving it.
+//
+// The check a UI makes before choosing between two layouts, and the
+// one a build step makes against a reference resource. Cheap: a
+// lookup, not a resolution.
+pub fn has_message(b: I18nBundle, id: Str) -> Bool []
+    todo("i18n-nv.i18nbundle.has_message")
+
+// Which bundle in a chain would answer an id, as an index, or `-1`.
+//
+// Published because "this string came out in English on a Danish page"
+// is a question somebody asks about a running program, and the answer
+// is otherwise invisible.
+pub fn answering_bundle(c: I18nChain, id: Str) -> Int []
+    todo("i18n-nv.i18nbundle.answering_bundle")
+
+// Every message id a bundle can resolve, sorted.
+pub fn message_ids(b: I18nBundle) -> [Str] []
+    todo("i18n-nv.i18nbundle.message_ids")
+
+// The ids a reference bundle has that this one does not — the
+// translation gap, as a list.
+//
+// The call a build step makes, and the reason it is in the package
+// rather than in a script: the comparison has to know that an
+// attribute is part of a message and that a term is not a message at
+// all, and a script comparing `message_ids` misses both.
+pub fn missing_against(b: I18nBundle, reference: I18nBundle) -> [Str] []
+    todo("i18n-nv.i18nbundle.missing_against")
+
+// The ids whose patterns reference a different set of variables than
+// the reference bundle's do.
+//
+// THE OTHER HALF OF THE BUILD-STEP CHECK, and the one that catches the
+// defect `I18nMissingVariable` reports at run time — a translation
+// that says `{ $userName }` where the source says `{ $username }`.
+pub fn variable_drift(b: I18nBundle, reference: I18nBundle) -> [Str] []
+    todo("i18n-nv.i18nbundle.variable_drift")
+
+// Whether a resolution produced no errors at all — the ordinary case.
+pub fn is_clean(r: I18nResolved) -> Bool []
+    todo("i18n-nv.i18nbundle.is_clean")

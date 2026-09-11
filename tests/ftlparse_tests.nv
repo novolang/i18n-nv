@@ -1,0 +1,240 @@
+// ftlparse_tests.nv — FTL as a typed value.
+//
+// RED ON PURPOSE: every body under `src/` is a `todo()`, so every
+// assertion here reaches `not implemented: i18n-nv.<module>.<fn>`.
+// That is the expected result until the bodies land.
+//
+// THE VECTORS ARE Project Fluent's OWN `fluent-syntax` fixtures: the
+// same FTL files, the same message and attribute shapes, the same junk
+// behaviour. Where a case exists only here it is a build-step check
+// this package publishes and `fluent-rs` leaves to a tool.
+//
+// THE ASSERTION THIS SUITE EXISTS FOR: parsing never throws away what
+// it could read. An FTL file with one broken message localises
+// everything else, which is the same principle the resolver follows
+// one level up.
+
+use std.test
+use std.list
+use std.bytes
+use ftlparse
+
+fn simple() -> Str
+    "hello = Hello, { \$name }!\n"
+
+@test
+fn test_a_message_is_an_id_a_value_and_its_attributes() [io]
+    let src = "login-button = Sign in\n    .aria-label = Sign in to your account\n"
+    let out = ftlparse.parse(src)
+    let r = out.0
+
+    test.case("it parsed with no errors")
+    test.assert(list.len(out.1) == 0)
+    test.assert(list.len(r.messages) == 1)
+
+    test.case("the id is the identifier, without the equals sign")
+    test.assert(r.messages[0].id == "login-button")
+
+    test.case("THE ATTRIBUTE TRAVELS WITH THE MESSAGE — the reason FTL is parsed and not mapped")
+    test.assert(list.len(r.messages[0].attributes) == 1)
+    test.assert(r.messages[0].attributes[0].name == "aria-label")
+
+    test.case("attribute_of finds it by name")
+    match ftlparse.attribute_of(r.messages[0], "aria-label")
+        Some(_) => test.assert(true)
+        None    => test.assert(false)
+
+    test.case("and answers None for one that is not there")
+    match ftlparse.attribute_of(r.messages[0], "title")
+        None    => test.assert(true)
+        Some(_) => test.assert(false)
+
+    test.case("a message with attributes and no value of its own is legal")
+    let icon = ftlparse.parse("icon-button =\n    .aria-label = Close\n")
+    match icon.0.messages[0].value
+        None    => test.assert(true)
+        Some(_) => test.assert(false)
+
+@test
+fn test_a_pattern_is_text_and_placeables_over_the_callers_source() [io]
+    let r = ftlparse.parse(simple()).0
+
+    test.case("one message")
+    test.assert(list.len(r.messages) == 1)
+
+    test.case("its pattern has text, a placeable, and text")
+    match r.messages[0].value
+        None    => test.assert(false)
+        Some(p) => test.assert(list.len(p.elements) == 3)
+
+    test.case("THE SPANS POINT INTO THE SOURCE — nothing was copied")
+    test.assert(r.source == simple())
+    match r.messages[0].value
+        None    => test.assert(false)
+        Some(p) =>
+            match p.elements[0]
+                FtlText(sp) => test.assert(ftlparse.span_str(r, sp) == "Hello, ")
+                _           => test.assert(false)
+
+    test.case("the placeable is a variable reference")
+    match r.messages[0].value
+        None    => test.assert(false)
+        Some(p) =>
+            match p.elements[1]
+                FtlPlaceable(e) =>
+                    match e
+                        FtlVariable(n) => test.assert(n == "name")
+                        _              => test.assert(false)
+                _               => test.assert(false)
+
+@test
+fn test_a_selector_has_exactly_one_default_and_that_makes_resolution_total() [io]
+    let src = "count = { \$n ->\n    [one] one file\n   *[other] { \$n } files\n }\n"
+    let out = ftlparse.parse(src)
+
+    test.case("it parsed")
+    test.assert(list.len(out.1) == 0)
+
+    test.case("the selector has two variants and one of them is the default")
+    match out.0.messages[0].value
+        None    => test.assert(false)
+        Some(p) =>
+            match p.elements[0]
+                FtlPlaceable(e) =>
+                    match e
+                        FtlSelect(_, vs) =>
+                            test.assert(list.len(vs) == 2)
+                            var defaults = 0
+                            for v in vs
+                                if v.is_default
+                                    defaults = defaults + 1
+                            test.assert(defaults == 1)
+                        _                => test.assert(false)
+                _               => test.assert(false)
+
+    test.case("A SELECTOR WITH NO DEFAULT IS A PARSE ERROR — that is what makes resolution total")
+    let bad = "count = { \$n ->\n    [one] one\n    [other] many\n }\n"
+    match ftlparse.parse_strict(bad)
+        Ok(_)  => test.assert(false)
+        Err(e) =>
+            match e
+                FtlNoDefaultVariant(_) => test.assert(true)
+                _                      => test.assert(false)
+
+    test.case("and two defaults are an error as well")
+    let two = "count = { \$n ->\n   *[one] one\n   *[other] many\n }\n"
+    match ftlparse.parse_strict(two)
+        Ok(_)  => test.assert(false)
+        Err(e) =>
+            match e
+                FtlMultipleDefaults(_) => test.assert(true)
+                _                      => test.assert(false)
+
+    test.case("an explicit numeric key is marked as a number, not as a name")
+    let explicit = "n = { \$n ->\n    [0] none\n   *[other] some\n }\n"
+    match explicit_variants(explicit)
+        Some(v) => test.assert(v.key_is_number)
+        None    => test.assert(false)
+
+fn explicit_variants(src: Str) -> ?ftlparse.FtlVariant
+    let r = ftlparse.parse(src).0
+    match r.messages[0].value
+        None    => None
+        Some(p) =>
+            match p.elements[0]
+                FtlPlaceable(e) =>
+                    match e
+                        FtlSelect(_, vs) => Some(vs[0])
+                        _                => None
+                _               => None
+
+@test
+fn test_parsing_keeps_everything_it_could_read() [io]
+    // One broken entry between two good ones.
+    let src = "first = One\n= broken\nlast = Two\n"
+    let out = ftlparse.parse(src)
+
+    test.case("the error is reported")
+    test.assert(list.len(out.1) == 1)
+
+    test.case("AND BOTH GOOD MESSAGES ARE STILL THERE")
+    test.assert(list.len(out.0.messages) == 2)
+    test.assert(out.0.messages[0].id == "first")
+    test.assert(out.0.messages[1].id == "last")
+
+    test.case("the junk is kept with its span, so a tool can show what it skipped")
+    test.assert(list.len(out.0.junk) == 1)
+
+    test.case("parse_strict refuses the whole file — because a BUILD should fail")
+    match ftlparse.parse_strict(src)
+        Ok(_)  => test.assert(false)
+        Err(_) => test.assert(true)
+
+    test.case("a duplicate id keeps the FIRST, so a resource is never half-overwritten")
+    let dup = ftlparse.parse("a = one\na = two\n")
+    test.assert(list.len(dup.0.messages) == 1)
+    match dup.0.messages[0].value
+        None    => test.assert(false)
+        Some(p) =>
+            match p.elements[0]
+                FtlText(sp) => test.assert(ftlparse.span_str(dup.0, sp) == "one")
+                _           => test.assert(false)
+
+    test.case("and error_at reads the offset off any error without a match")
+    test.assert(ftlparse.error_at(FtlExpectedId(7)) == 7)
+
+@test
+fn test_terms_are_private_to_the_file() [io]
+    let src = "-brand = Novo\nwelcome = Welcome to { -brand }\n"
+    let r = ftlparse.parse(src).0
+
+    test.case("a term is not a message")
+    test.assert(list.len(r.messages) == 1)
+    test.assert(list.len(r.terms) == 1)
+
+    test.case("term_of finds it by its name WITHOUT the sigil")
+    match ftlparse.term_of(r, "brand")
+        Some(t) => test.assert(t.id == "brand")
+        None    => test.assert(false)
+
+    test.case("and message_of does not — which is what stops a translation detail becoming an API")
+    match ftlparse.message_of(r, "brand")
+        None    => test.assert(true)
+        Some(_) => test.assert(false)
+    match ftlparse.message_of(r, "-brand")
+        None    => test.assert(true)
+        Some(_) => test.assert(false)
+
+    test.case("message_ids lists the messages and not the terms")
+    test.assert(ftlparse.message_ids(r) == ["welcome"])
+
+@test
+fn test_the_build_step_checks_are_published_because_this_is_the_commonest_defect() [io]
+    let r = ftlparse.parse("hello = Hi { \$name }, you have { \$count } messages\n").0
+
+    test.case("variables_of lists what a message references, in source order")
+    test.assert(ftlparse.variables_of(r, r.messages[0]) == ["name", "count"])
+
+    test.case("duplicates are removed")
+    let twice = ftlparse.parse("x = { \$a } and { \$a }\n").0
+    test.assert(list.len(ftlparse.variables_of(twice, twice.messages[0])) == 1)
+
+    test.case("A TRANSLATION THAT RENAMED A VARIABLE IS A DIFFERENT LIST — the whole point")
+    let bad = ftlparse.parse("hello = Hej { \$userName }, du har { \$count } beskeder\n").0
+    test.assert(ftlparse.variables_of(r, r.messages[0])
+                != ftlparse.variables_of(bad, bad.messages[0]))
+
+    test.case("the built-ins are data, so a build step can refuse an unknown call")
+    test.assert(ftlparse.builtins() == ["NUMBER", "DATETIME"])
+
+@test
+fn test_a_resource_writes_back_out_canonically() [io]
+    test.case("the indentation rules everybody gets wrong by hand")
+    let r = ftlparse.parse("a = one\n    .attr = two\n").0
+    let empty: [u8] = []
+    let out = ftlparse.write_into(empty, r)
+    test.assert(list.len(out) > 0)
+
+    test.case("and what it wrote parses back to the same messages")
+    let text = bytes.byte_list_to_str(out)
+    test.assert(ftlparse.message_ids(ftlparse.parse(text).0) == ["a"])

@@ -1,0 +1,243 @@
+// i18nfmt.nv — numbers and dates, delegated, and the operands that
+// come back with them.
+//
+// Every body here is a `todo()`; the signatures are the design.
+//
+// THIS MODULE DOES NOT FORMAT NUMBERS. numfmt-nv does the digits and
+// calendar-nv does the calendar; what is here is the LOCALE part —
+// which separator, which order, which month name — and the bridge that
+// makes the plural selector agree with the formatter.
+//
+// **THE BRIDGE IS `operands_of`, AND IT IS THE REASON THIS MODULE
+// EXISTS.** A CLDR plural category depends on the visible fraction
+// digits (`i18nplural`'s module comment says why), so the number a
+// person reads and the category a selector picks have to come from ONE
+// formatting. `operands_of` takes the same `I18nNumFormat` the
+// formatter will use and answers the operands that formatting
+// produces. A program that formatted with one setting and pluralised
+// with another says "1.0 file", and nothing in either library could
+// have caught it.
+//
+// GROUPING AND DECIMAL SEPARATORS ARE DATA. `1,234.56` in English,
+// `1.234,56` in German, `1 234,56` in French with a NARROW NO-BREAK
+// SPACE — which is U+202F and not a space, and is the detail that
+// makes a hand-rolled formatter wrong in a way that only shows when
+// the text wraps. The separators are rows in `I18nNumSymbols`, the
+// same way plural rules are rows.
+//
+// THERE IS NO CLOCK. A date placeable formats a `CivilDateTime` the
+// caller passed in, and there is no `now()` anywhere in this package.
+// That is what keeps the layer `core`, and it is also what makes a
+// localised string testable: a message whose output depends on when
+// the test ran is a message nobody can assert against.
+
+use digits
+use civil
+use i18nplural
+
+// The separators and signs a locale writes numbers with.
+pub struct I18nNumSymbols
+    // `.` in English, `,` in German and French.
+    decimal: Str
+    // `,` in English, `.` in German, U+202F NARROW NO-BREAK SPACE in
+    // French. A `Str` and not a byte for exactly that reason.
+    group: Str
+    // `-` almost everywhere, and a different codepoint in a few
+    // locales.
+    minus: Str
+    // `%`, and the locales that put a space before it.
+    percent: Str
+    // What is written for a number that is not one.
+    nan: Str
+    infinity: Str
+
+// How a number is written.
+pub struct I18nNumFormat
+    symbols: I18nNumSymbols
+    // Fewest fraction digits to show. 0 for a count, 2 for money.
+    min_fraction_digits: Int
+    // Most. Equal to the minimum for money; larger for a measurement.
+    max_fraction_digits: Int
+    // Whether to group the integer part at all. Off for a year, on for
+    // a count — which is why it is a field and not a property of the
+    // locale.
+    use_grouping: Bool
+    // Digits in the first group and in the rest. Three and three in
+    // most locales, three and TWO in Indian English, where 1234567 is
+    // `12,34,567`.
+    primary_group: Int
+    secondary_group: Int
+
+// How a date is written.
+pub enum I18nDateStyle
+    // `2026-09-11` — ISO 8601, locale-independent, and the right
+    // choice for a log line or a sort key rather than for a person.
+    I18nDateIso
+    // `11/09/2026` in most of the world, `9/11/2026` in the United
+    // States. The ambiguity is the point: this style is what a locale
+    // says it is.
+    I18nDateShort
+    // `11 Sep 2026`.
+    I18nDateMedium
+    // `11 September 2026`.
+    I18nDateLong
+    // `Friday, 11 September 2026`.
+    I18nDateFull
+
+// How a time is written.
+pub enum I18nTimeStyle
+    // No time at all — a date placeable that is only a date.
+    I18nTimeNone
+    // `14:30`, or `2:30 PM`.
+    I18nTimeShort
+    // `14:30:05`.
+    I18nTimeMedium
+
+// The month and weekday names, and the patterns, a locale writes dates
+// with.
+//
+// A value rather than a table lookup inside the formatter because a
+// locale this release does not ship can then be supplied by the
+// caller, the same way a plural rule can — and because a program
+// shipping its own translations of twelve month names should not have
+// to fork this package to use them.
+pub struct I18nDateSymbols
+    locale: Str
+    // Twelve, January first.
+    months: [Str]
+    months_short: [Str]
+    // Seven, MONDAY FIRST — ISO 8601's order, and
+    // `calendar-nv`'s `Weekday`. A locale that starts its week on
+    // Sunday says so in `first_weekday` rather than by reordering the
+    // list, so an index is never ambiguous.
+    weekdays: [Str]
+    weekdays_short: [Str]
+    // 1 for Monday, 7 for Sunday.
+    first_weekday: Int
+    // `AM` and `PM`, for a locale that uses them.
+    am: Str
+    pm: Str
+    // Whether the locale writes a 12-hour clock.
+    hour12: Bool
+
+// English's symbols: `.` and `,`, three-digit groups.
+pub fn en_symbols() -> I18nNumSymbols []
+    todo("i18n-nv.i18nfmt.en_symbols")
+
+// The symbols for a locale, falling back to English's for one this
+// release does not ship. Never `None`, for the same reason
+// `i18nplural.rules_for` is never `None`.
+pub fn symbols_for(locale: Str) -> I18nNumSymbols []
+    todo("i18n-nv.i18nfmt.symbols_for")
+
+// The date symbols for a locale, with the same fallback.
+pub fn date_symbols_for(locale: Str) -> I18nDateSymbols []
+    todo("i18n-nv.i18nfmt.date_symbols_for")
+
+// A plain integer format for a locale: no fraction digits, grouping
+// on.
+//
+// ```novo
+// use i18nfmt
+//
+// let f = i18nfmt.integer_format("de")
+// println(f.symbols.group)   // .
+// ```
+pub fn integer_format(locale: Str) -> I18nNumFormat []
+    todo("i18n-nv.i18nfmt.integer_format")
+
+// A fixed-decimal format: exactly `digits` fraction digits, grouping
+// on. What money wants.
+pub fn decimal_format(locale: Str, fraction_digits: Int) -> I18nNumFormat []
+    todo("i18n-nv.i18nfmt.decimal_format")
+
+// **The bridge.** The plural operands the number `value` produces when
+// formatted under `f`.
+//
+// See the module comment: this is what makes the selector and the
+// formatter agree, and a program that skips it says "1.0 file".
+//
+// ```novo
+// use i18nfmt
+// use i18nplural
+//
+// let f = i18nfmt.decimal_format("en", 1)
+// let ops = i18nfmt.operands_of(1.0, f)
+// match i18nplural.category_of(i18nplural.rules_for("en", I18nCardinal), ops)
+//     I18nOther => println("other — because 1.0 has a visible fraction digit")
+//     _         => println("one")
+// ```
+pub fn operands_of(value: Float, f: I18nNumFormat) -> i18nplural.I18nOperands []
+    todo("i18n-nv.i18nfmt.operands_of")
+
+// The operands an integer produces under `f`. Separate because an
+// integer's are exact and a float's are a rounding.
+pub fn operands_of_int(value: Int, f: I18nNumFormat) -> i18nplural.I18nOperands []
+    todo("i18n-nv.i18nfmt.operands_of_int")
+
+// Append a formatted integer to `out`.
+//
+// The digits are numfmt-nv's; what this adds is the separator and the
+// grouping. `digits.Radix` is in the signature of `format_int_radix`
+// rather than here because a localised number is decimal by
+// definition — a hexadecimal number has no locale.
+pub fn int_into(out: [u8], value: Int, f: I18nNumFormat) -> [u8] []
+    todo("i18n-nv.i18nfmt.int_into")
+
+// Append a formatted number to `out`.
+pub fn float_into(out: [u8], value: Float, f: I18nNumFormat) -> [u8] []
+    todo("i18n-nv.i18nfmt.float_into")
+
+// Append an integer in a radix, with no locale applied.
+//
+// Here so that an FTL file can write a hexadecimal id in a message
+// without the grouping separator a locale would otherwise insert, and
+// the signature says what it is doing: `digits.Radix` is numfmt-nv's
+// own type, and this call is a passthrough.
+pub fn int_radix_into(out: [u8], value: Int, radix: digits.Radix) -> [u8] []
+    todo("i18n-nv.i18nfmt.int_radix_into")
+
+// Append a formatted date and time to `out`.
+//
+// `dt` is calendar-nv's `CivilDateTime`, so a caller that already
+// holds a date passes it rather than converting. There is no clock
+// here: the caller decides what "now" is.
+pub fn datetime_into(out: [u8], dt: civil.CivilDateTime, date: I18nDateStyle, time: I18nTimeStyle,
+                     s: I18nDateSymbols) -> [u8] []
+    todo("i18n-nv.i18nfmt.datetime_into")
+
+// Append a formatted date to `out`.
+pub fn date_into(out: [u8], d: civil.CivilDate, style: I18nDateStyle, s: I18nDateSymbols) -> [u8] []
+    todo("i18n-nv.i18nfmt.date_into")
+
+// The weekday name for a date, in a locale's own words — the lookup
+// that makes `I18nDateSymbols.weekdays`' Monday-first order safe.
+pub fn weekday_name(d: civil.CivilDate, s: I18nDateSymbols, short: Bool) -> Str []
+    todo("i18n-nv.i18nfmt.weekday_name")
+
+// The month name for a date, likewise.
+pub fn month_name(d: civil.CivilDate, s: I18nDateSymbols, short: Bool) -> Str []
+    todo("i18n-nv.i18nfmt.month_name")
+
+// Append a relative time — `3 days ago`, `in 2 months` — for the
+// difference between two civil date-times.
+//
+// BOTH instants are parameters, and that is the whole design: a
+// relative-time formatter that called a clock would produce a
+// different string on every run and could not be tested. The caller
+// supplies `now`, which a host read from `std.time` or a test pinned.
+//
+// The category the count falls in is `i18nplural`'s, so `3 days` and
+// `1 day` come out right in a locale with six forms.
+pub fn relative_into(out: [u8], from: civil.CivilDateTime, now: civil.CivilDateTime, locale: Str,
+                     s: I18nDateSymbols) -> [u8] []
+    todo("i18n-nv.i18nfmt.relative_into")
+
+// Every locale this release ships number and date symbols for.
+//
+// Published beside `i18nplural.shipped_locales` so a build step can
+// check both, and so the README's list cannot drift from the code —
+// the two sets are not the same, and saying so is more useful than
+// implying they are.
+pub fn shipped_locales() -> [Str] []
+    todo("i18n-nv.i18nfmt.shipped_locales")

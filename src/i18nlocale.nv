@@ -1,0 +1,149 @@
+// i18nlocale.nv — which locale, and what to fall back to.
+//
+// Every body here is a `todo()`; the signatures are the design.
+//
+// A LOCALE IS A TAG, NOT A STRING THIS PACKAGE INVENTED. BCP 47, in
+// the subset every localisation actually uses: a language, an optional
+// script, an optional region, and the `und` that means "unspecified".
+// `pt-BR` and `pt-PT` are different locales; `pt-BR` and `pt` are not
+// the same but one falls back to the other; `zh-Hans` and `zh-Hant`
+// differ in script and not in region, which is exactly why the script
+// subtag has to be modelled rather than folded into the language.
+//
+// NEGOTIATION IS A CHAIN, NOT A CHOICE. A program does not have one
+// locale; it has an ordered list of what the user asked for and an
+// unordered set of what it shipped, and the answer is an ORDERED CHAIN
+// of the shipped locales to try. A message missing from `da` should
+// come out in `en` rather than as its own id, and the chain is what
+// makes that automatic rather than a special case at every call site.
+//
+// THE DEFAULT IS ALWAYS LAST AND ALWAYS PRESENT. `negotiate` puts the
+// caller's default at the end of every chain it answers, so a chain is
+// never empty and resolution always has somewhere to land. That is the
+// second half of "resolution cannot fail": the first half is
+// `i18nbundle`'s error list, and this is why there is always a bundle
+// to ask.
+
+// A parsed BCP 47 tag, in the subset a localisation uses.
+pub struct I18nLocale
+    // The primary language subtag, lower-cased: `en`, `da`, `zh`.
+    // `und` when unspecified.
+    language: Str
+    // The script subtag, title-cased, or empty: `Hans`, `Cyrl`.
+    script: Str
+    // The region subtag, upper-cased, or empty: `BR`, `PT`, `419`.
+    region: Str
+    // The tag as written, so a caller can echo what it was given
+    // rather than a normalised spelling the user never typed.
+    source: Str
+
+// How aggressively a requested locale may be matched against an
+// available one.
+pub enum I18nMatch
+    // Only an exact tag match. `pt-BR` matches `pt-BR` and nothing
+    // else.
+    I18nMatchExact
+    // The requested tag with its region removed also matches: `pt-BR`
+    // matches `pt`. The default, and what a browser's
+    // `Accept-Language` expects.
+    I18nMatchLanguage
+    // Any locale with the same language matches, region and script
+    // included: `pt-BR` matches `pt-PT`. Useful for a corpus where
+    // some Portuguese is better than none, and wrong for one where
+    // `zh-Hans` and `zh-Hant` are mutually unreadable — which is why
+    // it is named rather than default.
+    I18nMatchAny
+
+// Parse a BCP 47 tag.
+//
+// `None` for a tag that is not one at all. Malformed is the ONLY
+// failure: an unknown language is not an error, because the set of
+// languages is not this package's to know and a private-use tag is a
+// legitimate thing to ship.
+//
+// ```novo
+// use i18nlocale
+//
+// match i18nlocale.parse("pt-BR")
+//     Some(l) => println(l.region)   // BR
+//     None    => println("not a tag")
+// ```
+pub fn parse(tag: Str) -> ?I18nLocale []
+    todo("i18n-nv.i18nlocale.parse")
+
+// The canonical spelling of a locale: language lower, script title,
+// region upper, hyphen-separated.
+//
+// The key a bundle map should use, and NOT what `I18nLocale.source`
+// holds — a user who typed `PT-br` should see their own spelling in an
+// error message and have their bundle found under the canonical one.
+pub fn canonical(l: I18nLocale) -> Str []
+    todo("i18n-nv.i18nlocale.canonical")
+
+// Whether two locales are the same under a matching policy.
+pub fn matches(requested: I18nLocale, available: I18nLocale, how: I18nMatch) -> Bool []
+    todo("i18n-nv.i18nlocale.matches")
+
+// The chain of available locales to try, in order, for a list of
+// requested ones.
+//
+// `default` is ALWAYS the last element, and is added even when it is
+// not in `available` — so the chain is never empty and resolution
+// always has a bundle to ask. That is what makes a missing message a
+// reported error rather than a crash.
+//
+// ```novo
+// use i18nlocale
+//
+// let chain = i18nlocale.negotiate(["da-DK", "de"], ["da", "en", "de"], "en",
+//                                  I18nMatchLanguage)
+// for tag in chain
+//     println(tag)   // da, de, en
+// ```
+pub fn negotiate(requested: [Str], available: [Str], default: Str, how: I18nMatch) -> [Str] []
+    todo("i18n-nv.i18nlocale.negotiate")
+
+// The chain for ONE requested locale — the common case, and it does
+// not allocate a request list to express it.
+pub fn chain_for(requested: Str, available: [Str], default: Str, how: I18nMatch) -> [Str] []
+    todo("i18n-nv.i18nlocale.chain_for")
+
+// An `Accept-Language` header value parsed into a requested list, best
+// first, with the quality values applied and dropped.
+//
+// Here rather than in a host package because it is a string parse and
+// nothing else, and because the alternative — every web framework
+// writing its own — is how `q=0` ends up treated as a low preference
+// rather than as the refusal RFC 9110 § 12.5.4 says it is. A `q=0`
+// locale is EXCLUDED from the result.
+pub fn parse_accept_language(header: Str) -> [Str] []
+    todo("i18n-nv.i18nlocale.parse_accept_language")
+
+// The locale a tag falls back to by removing its most specific
+// subtag: `pt-BR` to `pt`, `zh-Hans-CN` to `zh-Hans`, `pt` to `und`.
+//
+// Published because it is the rule, and a caller building its own
+// chain should use the same one rather than splitting on a hyphen —
+// which gets `zh-Hans-CN` wrong in a way that only shows for the
+// scripts it matters for.
+pub fn truncate_tag(l: I18nLocale) -> ?I18nLocale []
+    todo("i18n-nv.i18nlocale.truncate_tag")
+
+// Whether a locale's script is written right to left.
+//
+// The fact a UI needs to set its direction, and the fact
+// `I18nBundleOptions.use_isolating` exists for. Derived from the
+// script subtag where there is one and from the language where there
+// is not, over the named set — Arabic, Hebrew, Persian, Urdu, Syriac,
+// Thaana, N'Ko, Adlam — which the README lists rather than leaving to
+// a reader to discover.
+pub fn is_rtl(l: I18nLocale) -> Bool []
+    todo("i18n-nv.i18nlocale.is_rtl")
+
+// The `und` locale: a parsed tag with no language.
+//
+// A named constructor because it is what a negotiation answers for a
+// request it could not satisfy at all, and a caller comparing against
+// a string literal would miss the canonical spelling.
+pub fn undetermined() -> I18nLocale []
+    todo("i18n-nv.i18nlocale.undetermined")

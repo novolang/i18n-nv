@@ -1,0 +1,259 @@
+// ftlparse.nv — FTL text as a typed value.
+//
+// Every body here is a `todo()`; the signatures are the design.
+//
+// FLUENT'S SYNTAX, AND WHY IT IS WORTH PARSING RATHER THAN
+// INTERPOLATING. An FTL file is not a map of keys to strings. A message
+// carries attributes — `login-button = Sign in` with
+// `    .aria-label = Sign in to your account` under it — so the label
+// and its accessible name travel together and cannot drift apart in
+// translation. A pattern carries placeables, and a placeable may be a
+// selector, which is what lets a translator into a language with six
+// plural categories write six of them where English has two, WITHOUT
+// the program knowing that language has six.
+//
+// That last point is the whole reason Fluent exists and the reason
+// this package does not ship `template-nv` with a plural helper: the
+// program says "here is a count", and the translation decides how many
+// forms that count has. A program that chose between a singular and a
+// plural string itself has made English's grammar a property of the
+// source code, and Polish, Arabic and Welsh then cannot be translated
+// correctly no matter what the translator writes.
+//
+// PARSING NEVER THROWS AWAY WHAT IT COULD READ. `parse` answers a
+// resource AND a list of errors: a junk entry is recorded with its
+// span and skipped, and every message around it is still there. An FTL
+// file with one broken message should localise everything else, not
+// blank the interface — which is the same principle `i18nbundle`'s
+// resolution follows, one level up.
+//
+// EVERY SPAN POINTS INTO THE CALLER'S SOURCE. A resource holds the FTL
+// text and byte ranges into it. A file of two thousand messages is
+// parsed without copying a string, and an editor showing a translator
+// where a message is reads the span.
+
+// A byte range into the FTL source: `[start, end)`.
+pub struct FtlSpan
+    start: Int
+    end: Int
+
+// What a placeable evaluates.
+pub enum FtlExpr
+    // `{ $count }` — an argument the caller passed in.
+    FtlVariable(name: Str)
+    // `{ other-message }` — another message's value.
+    FtlMessageRef(id: Str, attribute: Str)
+    // `{ -brand-name }` — a term. Terms are private to the FTL file:
+    // a program cannot resolve one by id, which is what stops a
+    // translation detail from becoming an API.
+    FtlTermRef(id: Str, attribute: Str)
+    // `{ "literal" }` and `{ 42 }`.
+    FtlStringLit(value: FtlSpan)
+    FtlNumberLit(value: FtlSpan)
+    // `{ NUMBER($n, minimumFractionDigits: 2) }` — a built-in
+    // function. The named set is `ftlparse.builtins`, and a call to
+    // anything else is an error at resolution rather than at parse,
+    // because a newer FTL file read by an older program should still
+    // localise every message that does not use the new function.
+    FtlFunctionCall(name: Str, positional: [FtlExpr], named: [FtlNamedArg])
+    // `{ $n -> ... }` — a selector, with its variants.
+    FtlSelect(selector: [FtlExpr], variants: [FtlVariant])
+
+// A named argument in a function call: `minimumFractionDigits: 2`.
+pub struct FtlNamedArg
+    name: Str
+    value: FtlExpr
+
+// One arm of a selector.
+pub struct FtlVariant
+    // The key: a plural category name (`one`, `other`), an explicit
+    // number (`[0]`), or an identifier.
+    key: Str
+    // Whether the key is a NUMBER rather than a name. Carried because
+    // an explicit `[1]` and the category `one` are matched by
+    // different rules — the number is compared first, exactly, and the
+    // category only if no number matched.
+    key_is_number: Bool
+    // `*[other]` — the arm taken when nothing else matches. Exactly
+    // one variant in every selector is the default, and a selector
+    // with none is a parse error, which is what makes resolution
+    // total.
+    is_default: Bool
+    pattern: FtlPattern
+
+// One piece of a pattern.
+pub enum FtlElement
+    // Literal text, as a span into the source.
+    FtlText(text: FtlSpan)
+    // `{ ... }`.
+    FtlPlaceable(expr: FtlExpr)
+
+// A message's value, or an attribute's, or a variant's.
+pub struct FtlPattern
+    elements: [FtlElement]
+
+// One message.
+pub struct FtlMessage
+    id: Str
+    // `None` for a message that has attributes and no value of its own
+    // — which is legal FTL and is how an icon-only button with an
+    // accessible name is written.
+    value: ?FtlPattern
+    attributes: [FtlAttribute]
+    // The comment above it, as a span. Carried because it is the only
+    // context a translator gets, and a tool that strips it has made
+    // the translation worse in a way nobody can see from the output.
+    comment: FtlSpan
+
+// One attribute of a message.
+pub struct FtlAttribute
+    name: Str
+    value: FtlPattern
+
+// One term: a message whose id begins `-`, resolvable only from inside
+// the FTL file.
+pub struct FtlTerm
+    id: Str
+    value: FtlPattern
+    attributes: [FtlAttribute]
+    comment: FtlSpan
+
+// A parsed FTL file.
+pub struct FtlResource
+    // The FTL text, held so the spans mean something.
+    source: Str
+    messages: [FtlMessage]
+    terms: [FtlTerm]
+    // The spans of the entries that did not parse, in source order.
+    // Kept rather than dropped so a tool can show a translator exactly
+    // what it skipped.
+    junk: [FtlSpan]
+
+// Why an entry did not parse. Every variant carries the byte offset in
+// the source, because an FTL file is a file a translator has open.
+pub enum FtlParseError
+    // An identifier where one is required, or none where one is.
+    FtlExpectedId(at: Int)
+    // A `{` with no `}`.
+    FtlUnclosedPlaceable(at: Int)
+    // A selector with no `*[...]` default variant. Refused at parse
+    // rather than at resolution, because it is what makes resolution
+    // total.
+    FtlNoDefaultVariant(at: Int)
+    // Two `*` in one selector.
+    FtlMultipleDefaults(at: Int)
+    // A message with neither a value nor an attribute.
+    FtlEmptyMessage(at: Int, id: Str)
+    // Two entries with the same id in one resource. The LATER one is
+    // junk and the first survives, so a resource is never
+    // half-overwritten.
+    FtlDuplicateId(at: Int, id: Str)
+    // A term referenced with `{ -x }` from a place a term may not be
+    // used, or a message used as a selector.
+    FtlBadReference(at: Int)
+    // Indentation that does not continue the pattern it appears to.
+    FtlBadIndent(at: Int)
+
+// The one-line message, for a caller printing rather than matching.
+//
+// `Result<T, FtlParseError>` requires it — SPEC § 3.4 makes `Error` the
+// bound on a result's error type — so the impl exists whether or not
+// an interface release has anything to say yet, and its body is a
+// `todo()` like every other body here.
+//
+// ```novo
+// use ftlparse
+//
+// match ftlparse.parse_strict("hello = ")
+//     Ok(_)  => println("parsed")
+//     Err(e) => println(e.message())
+// ```
+impl Error for FtlParseError
+    // Panics with `not implemented` until the bodies land.
+    fn message(self) -> Str
+        todo("i18n-nv.FtlParseError.message")
+
+// Parse FTL text, keeping everything that parsed.
+//
+// THE CALL AN APPLICATION MAKES. A junk entry is recorded in
+// `FtlResource.junk` and reported in the error list, and every message
+// around it is in the resource. An FTL file with one broken message
+// localises everything else.
+//
+// ```novo
+// use ftlparse
+//
+// let r = ftlparse.parse("hello = Hello, { \$name }!")
+// println(str.from_int(list.len(r.0.messages)))   // 1
+// ```
+pub fn parse(text: Str) -> (FtlResource, [FtlParseError]) []
+    todo("i18n-nv.ftlparse.parse")
+
+// Parse, refusing the whole file over any error.
+//
+// The call a BUILD STEP makes: a translation that does not parse
+// should fail the build that produced it, even though the application
+// that reads it at run time must not fail. Two calls rather than a
+// flag, because the two callers are different programs with different
+// correct behaviour.
+pub fn parse_strict(text: Str) -> Result<FtlResource, FtlParseError> []
+    todo("i18n-nv.ftlparse.parse_strict")
+
+// The byte offset a parse error is about, for a caller reporting it
+// without matching on every variant.
+pub fn error_at(e: FtlParseError) -> Int []
+    todo("i18n-nv.ftlparse.error_at")
+
+// The message with this id, or `None`.
+pub fn message_of(r: FtlResource, id: Str) -> ?FtlMessage []
+    todo("i18n-nv.ftlparse.message_of")
+
+// The term with this id — `id` written WITHOUT the leading `-`, since
+// the sigil is syntax rather than part of the name.
+pub fn term_of(r: FtlResource, id: Str) -> ?FtlTerm []
+    todo("i18n-nv.ftlparse.term_of")
+
+// The attribute with this name on this message, or `None`.
+pub fn attribute_of(m: FtlMessage, name: Str) -> ?FtlAttribute []
+    todo("i18n-nv.ftlparse.attribute_of")
+
+// The bytes a span covers. THIS ALLOCATES; a caller comparing a span
+// against a known string should compare the span's bytes in place.
+pub fn span_str(r: FtlResource, s: FtlSpan) -> Str []
+    todo("i18n-nv.ftlparse.span_str")
+
+// Every variable a message's patterns reference, in source order, with
+// duplicates removed.
+//
+// THE CALL A BUILD STEP MAKES, and the reason it is published: the
+// commonest localisation defect is a translation that references
+// `$userName` where the source references `$username`, which produces
+// a message with a hole in it for exactly the locale nobody on the
+// team reads. Comparing this list between two resources catches every
+// one of them before the release.
+pub fn variables_of(r: FtlResource, m: FtlMessage) -> [Str] []
+    todo("i18n-nv.ftlparse.variables_of")
+
+// Every message id in a resource, in source order — the other half of
+// the same build-step check.
+pub fn message_ids(r: FtlResource) -> [Str] []
+    todo("i18n-nv.ftlparse.message_ids")
+
+// The built-in function names an FTL file may call: `NUMBER` and
+// `DATETIME`.
+//
+// Published as data so a build step can refuse a call to anything else
+// at build time, while resolution stays tolerant of one at run time —
+// a newer FTL file read by an older program should still localise
+// every message that does not use the new function.
+pub fn builtins() -> [Str] []
+    todo("i18n-nv.ftlparse.builtins")
+
+// Append a resource's FTL text back out, canonically formatted.
+//
+// For a tool that edits a resource — a translation memory writing a
+// new message in, a linter fixing indentation — and it is here rather
+// than in a caller because FTL's indentation rules for multiline
+// patterns are the part everybody gets wrong by hand.
+pub fn write_into(out: [u8], r: FtlResource) -> [u8] []
+    todo("i18n-nv.ftlparse.write_into")

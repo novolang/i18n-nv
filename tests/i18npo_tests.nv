@@ -1,0 +1,195 @@
+// i18npo_tests.nv — gettext, and exactly where it stops.
+//
+// RED ON PURPOSE: every body under `src/` is a `todo()`, so every
+// assertion here reaches `not implemented: i18n-nv.<module>.<fn>`.
+//
+// THE VECTORS ARE real `Plural-Forms` headers from the translation
+// projects that publish them — Polish's three-index expression,
+// French's `n > 1`, Japanese's `nplurals=1` — because the expression
+// is the part of `.po` compatibility that is a program rather than a
+// format.
+//
+// THE ASSERTION THIS SUITE EXISTS FOR: a conversion says what it could
+// not carry across. Fuzzy entries, untranslated entries, positional
+// placeholders, folded contexts and ambiguous category mappings are
+// each a named limit, because a converter that answered only a
+// resource would have dropped all five silently.
+
+use std.test
+use std.list
+use std.str
+use i18npo
+
+fn simple_po() -> Str
+    "msgid \"\"\nmsgstr \"Plural-Forms: nplurals=2; plural=(n != 1);\\n\"\n\nmsgid \"hello\"\nmsgstr \"Hej\"\n"
+
+@test
+fn test_the_file_format_is_the_mechanical_half() [io]
+    match i18npo.read_catalogue(simple_po())
+        Err(_) => test.assert(false)
+        Ok(c)  =>
+            test.case("the header entry is parsed into fields")
+            test.assert(i18npo.header_of(c, "Plural-Forms") != "")
+
+            test.case("and nplurals comes off it")
+            test.assert(c.nplurals == 2)
+
+            test.case("one translated entry")
+            test.assert(list.len(c.entries) == 1)
+            test.assert(c.entries[0].id == "hello")
+            test.assert(c.entries[0].translations[0] == "Hej")
+
+            test.case("entry_of takes BOTH parts of the key, because msgctxt is part of it")
+            match i18npo.entry_of(c, "", "hello")
+                Some(_) => test.assert(true)
+                None    => test.assert(false)
+            match i18npo.entry_of(c, "menu", "hello")
+                Some(_) => test.assert(false)
+                None    => test.assert(true)
+
+    test.case("a line that is not a keyword, a string or a comment is refused with its line")
+    match i18npo.read_catalogue("msgid \"a\"\nnonsense\n")
+        Ok(_)  => test.assert(false)
+        Err(e) =>
+            match e
+                PoBadLine(line) => test.assert(line == 2)
+                _               => test.assert(false)
+
+    test.case("and error_line reads it off any of them without a match")
+    test.assert(i18npo.error_line(PoBadEscape(4)) == 4)
+
+@test
+fn test_the_plural_forms_header_is_a_program_and_is_parsed_as_one() [io]
+    // Polish: three indices, and the expression that picks between
+    // them is the case that makes this an evaluator rather than a
+    // lookup.
+    let pl = "nplurals=3; plural=(n==1 ? 0 : n%10>=2 && n%10<=4 && (n%100<10 || n%100>=20) ? 1 : 2);"
+
+    match i18npo.parse_plural_forms(pl)
+        Err(_) => test.assert(false)
+        Ok(p)  =>
+            test.case("nplurals and the expression come back separately")
+            test.assert(p.0 == 3)
+
+            test.case("AND THE EXPRESSION EVALUATES — 1 takes index 0")
+            test.assert(i18npo.eval_plural(p.1, 1) == 0)
+
+            test.case("2 takes index 1")
+            test.assert(i18npo.eval_plural(p.1, 2) == 1)
+
+            test.case("5 takes index 2")
+            test.assert(i18npo.eval_plural(p.1, 5) == 2)
+
+            test.case("and 22 takes index 1, which the modulus is there for")
+            test.assert(i18npo.eval_plural(p.1, 22) == 1)
+
+    test.case("French's is simpler and still an expression")
+    match i18npo.parse_plural_forms("nplurals=2; plural=(n > 1);")
+        Err(_) => test.assert(false)
+        Ok(p)  =>
+            test.assert(i18npo.eval_plural(p.1, 0) == 0)
+            test.assert(i18npo.eval_plural(p.1, 2) == 1)
+
+    test.case("Japanese has one form and a constant expression")
+    match i18npo.parse_plural_forms("nplurals=1; plural=0;")
+        Err(_) => test.assert(false)
+        Ok(p)  =>
+            test.assert(p.0 == 1)
+            test.assert(i18npo.eval_plural(p.1, 7) == 0)
+
+    test.case("an expression that is not one is refused rather than guessed at")
+    match i18npo.parse_plural_forms("nplurals=2; plural=(n ?? 1);")
+        Ok(_)  => test.assert(false)
+        Err(e) =>
+            match e
+                PoBadPluralExpr(_) => test.assert(true)
+                _                  => test.assert(false)
+
+    test.case("and the tree can be built by hand, for a caller writing its own header")
+    let by_hand = PoTernary(PoBin("==", PoVar, PoNum(1)), PoNum(0), PoNum(1))
+    test.assert(i18npo.eval_plural(by_hand, 1) == 0)
+    test.assert(i18npo.eval_plural(by_hand, 3) == 1)
+
+@test
+fn test_an_index_is_not_a_category_and_the_map_says_when_it_is_ambiguous() [io]
+    let pl_po = "msgid \"\"\nmsgstr \"Plural-Forms: nplurals=3; plural=(n==1 ? 0 : n%10>=2 && n%10<=4 && (n%100<10 || n%100>=20) ? 1 : 2);\\n\"\n"
+
+    match i18npo.read_catalogue(pl_po)
+        Err(_) => test.assert(false)
+        Ok(c)  =>
+            test.case("three indices, each covering the categories it actually covers")
+            let map = i18npo.category_map(c, "pl")
+            test.assert(list.len(map) == 3)
+
+            test.case("index 0 covers `one` alone — an exact conversion")
+            test.assert(list.len(map[0]) == 1)
+            match map[0][0]
+                I18nOne => test.assert(true)
+                _       => test.assert(false)
+
+    test.case("A HEADER THAT DOES NOT PARTITION THE WAY CLDR DOES IS AMBIGUOUS, and says so")
+    let odd = "msgid \"\"\nmsgstr \"Plural-Forms: nplurals=2; plural=(n > 10);\\n\"\n"
+    match i18npo.read_catalogue(odd)
+        Err(_) => test.assert(false)
+        Ok(c)  =>
+            let map = i18npo.category_map(c, "pl")
+            var ambiguous = false
+            for covered in map
+                if list.len(covered) > 1
+                    ambiguous = true
+            test.assert(ambiguous)
+
+@test
+fn test_a_conversion_lists_everything_it_could_not_carry_across() [io]
+    let po = "msgid \"\"\nmsgstr \"Plural-Forms: nplurals=2; plural=(n != 1);\\n\"\n\n#, fuzzy\nmsgid \"a\"\nmsgstr \"A\"\n\nmsgid \"b\"\nmsgstr \"\"\n\nmsgctxt \"menu\"\nmsgid \"c\"\nmsgstr \"C\"\n\nmsgid \"d %s\"\nmsgstr \"D %s\"\n"
+
+    match i18npo.read_catalogue(po)
+        Err(_) => test.assert(false)
+        Ok(c)  =>
+            test.case("the fuzzy flag is read, because gettext does not use a fuzzy entry")
+            test.assert(c.entries[0].fuzzy)
+
+            let out = i18npo.to_resource(c, "en")
+
+            test.case("AND THE LIMITS ARE A LIST, not a silent flattening")
+            test.assert(list.len(out.1) >= 4)
+
+            test.case("the fuzzy entry is skipped and said to be")
+            var saw_fuzzy = false
+            var saw_untranslated = false
+            var saw_context = false
+            var saw_positional = false
+            for l in out.1
+                match l
+                    PoFuzzySkipped(_)             =>
+                        saw_fuzzy = true
+                    PoUntranslated(_)             =>
+                        saw_untranslated = true
+                    PoContextFolded(_, _)         =>
+                        saw_context = true
+                    PoPositionalPlaceholder(_, _) =>
+                        saw_positional = true
+                    _                             =>
+                        pass
+            test.assert(saw_fuzzy)
+
+            test.case("an untranslated entry is omitted so the CHAIN does the falling back")
+            test.assert(saw_untranslated)
+
+            test.case("a msgctxt is folded into the id, and the note says where")
+            test.assert(saw_context)
+
+            test.case("and every %s becomes a named argument the program now has to pass")
+            test.assert(saw_positional)
+
+            test.case("the buffer form writes the FTL a migration would commit")
+            let empty: [u8] = []
+            let ftl = i18npo.to_ftl_into(empty, c, "en")
+            test.assert(list.len(ftl.0) > 0)
+            test.assert(list.len(ftl.1) == list.len(out.1))
+
+    test.case("the three Fluent features .po cannot express are published as text")
+    test.assert(list.len(i18npo.unsupported_features()) == 3)
+
+    test.case("and the error type prints itself, for a migration report")
+    test.assert(str.len(PoMissingPluralForms.message()) > 0)

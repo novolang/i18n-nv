@@ -1,0 +1,242 @@
+// i18npo.nv — gettext, and exactly how far it maps.
+//
+// Every body here is a `todo()`; the signatures are the design.
+//
+// WHY THIS MODULE EXISTS AT ALL. Most software that is already
+// translated is translated in `.po` files, and a project adopting
+// Fluent has a decade of them. Refusing to read one means either
+// abandoning the translations or writing the converter outside the
+// package, where it will be written once per project and differently
+// each time. So the reader is declared, and what it cannot do is
+// declared with it.
+//
+// **WHAT `.po` COMPATIBILITY WOULD TAKE, AND WHERE IT STOPS.** Four
+// things, and only the first is mechanical:
+//
+//   1. THE FILE FORMAT. `msgid`, `msgstr`, `msgctxt`, `msgid_plural`,
+//      `msgstr[n]`, the comment kinds, the C string escapes and the
+//      line continuations. Tedious and finite. `read_catalog` is it.
+//
+//   2. THE PLURAL FORMS HEADER IS A C EXPRESSION.
+//      `Plural-Forms: nplurals=3; plural=(n%10==1 && n%100!=11 ? 0 : n%10>=2 && n%10<=4 && (n%100<10 || n%100>=20) ? 1 : 2);`
+//      is a program, in a tiny expression language with `%`, the
+//      comparisons, `&&`, `||` and the ternary. Reading it means
+//      writing an evaluator for that language — which is
+//      `PoPluralExpr` and `eval_plural` below, declared because the
+//      alternative is pretending a `.po` file's plural rule is data
+//      when it is code.
+//
+//   3. THE INDICES ARE NOT CATEGORIES. `msgstr[0]` is a POSITION, not
+//      `one`, and which CLDR category a position corresponds to
+//      depends on the expression in the header. Mapping a catalogue
+//      onto `i18nplural`'s categories therefore means evaluating the
+//      expression over a range of counts and reading off which
+//      category each index covers — `category_map` — and the mapping
+//      can be AMBIGUOUS, because a `.po` file is free to use an
+//      expression that does not partition the way CLDR does. When it
+//      is, the conversion says so rather than guessing.
+//
+//   4. THREE FLUENT FEATURES HAVE NO `.po` SPELLING, and they are the
+//      three that make Fluent worth having: attributes, selectors on
+//      anything but a count, and terms. A converted catalogue is
+//      therefore a resource of plain messages and count selectors, and
+//      nothing else — `PoLimit` names each one so a conversion report
+//      can say what was flattened rather than leaving a translator to
+//      notice.
+//
+// NOT SHIPPED AT 0.1.0. This module's bodies land when a project with
+// `.po` files needs them; the interface is published now so the shape
+// is reviewed while it is cheap to change, and so that nobody writes
+// the converter outside the package in the meantime.
+
+use ftlparse
+use i18nplural
+
+// One entry in a catalogue.
+pub struct PoEntry
+    // `msgctxt`, or empty. Part of the key: two entries with the same
+    // `msgid` and different contexts are different messages, and a
+    // reader that ignored it would silently merge them.
+    context: Str
+    // `msgid`.
+    id: Str
+    // `msgid_plural`, or empty for an entry with no plural.
+    id_plural: Str
+    // `msgstr`, or the `msgstr[n]` list in index order.
+    translations: [Str]
+    // The `#.` extracted comments and the `#:` source references, as
+    // written. Kept because they are the only context a translator
+    // has.
+    comments: [Str]
+    references: [Str]
+    // `#, fuzzy` — a translation the tooling marked as needing review.
+    // A fuzzy entry is NOT used by gettext at run time, and a
+    // conversion that imported one anyway would ship a translation
+    // somebody had already flagged as wrong.
+    fuzzy: Bool
+    // `#, c-format` and the rest.
+    flags: [Str]
+
+// A parsed `.po` file.
+pub struct PoCatalogue
+    // The header entry's fields, parsed: `Language`,
+    // `Plural-Forms`, `Content-Type` and the rest.
+    headers: [(Str, Str)]
+    entries: [PoEntry]
+    // `nplurals` from the header.
+    nplurals: Int
+    // The `plural=` expression, parsed.
+    plural: PoPluralExpr
+
+// The `plural=` expression from a `Plural-Forms` header.
+//
+// A tree and not a string, because it has to be EVALUATED — see the
+// module comment. The language is C's conditional expression over one
+// variable, and this is all of it.
+pub enum PoPluralExpr
+    // `n`.
+    PoVar
+    // An integer literal.
+    PoNum(value: Int)
+    // `a % b`, `a == b`, `a != b`, `a < b`, `a <= b`, `a > b`,
+    // `a >= b`, `a && b`, `a || b`. The operator is a `Str` holding
+    // the C spelling, so the tree can be printed back out exactly as
+    // the header had it.
+    PoBin(op: Str, left: PoPluralExpr, right: PoPluralExpr)
+    // `c ? a : b`.
+    PoTernary(cond: PoPluralExpr, then_branch: PoPluralExpr, else_branch: PoPluralExpr)
+
+// Why a `.po` file could not be read.
+pub enum PoError
+    // A line that is not a keyword, a string or a comment.
+    PoBadLine(line: Int)
+    // A `msgstr` with no `msgid` before it.
+    PoOrphanString(line: Int)
+    // An unterminated or badly escaped C string.
+    PoBadEscape(line: Int)
+    // No `Plural-Forms` header on a catalogue that has plural entries.
+    PoMissingPluralForms
+    // The `plural=` expression did not parse.
+    PoBadPluralExpr(at: Int)
+    // `nplurals` and the number of `msgstr[n]` entries disagree.
+    PoPluralCountMismatch(line: Int, declared: Int, found: Int)
+
+// The one-line message, for a caller printing rather than matching.
+//
+// `Result<T, PoError>` requires it — SPEC § 3.4 makes `Error` the
+// bound on a result's error type — so the impl exists whether or not
+// an interface release has anything to say yet.
+//
+// ```novo
+// use i18npo
+//
+// match i18npo.read_catalogue("not a po file\n")
+//     Ok(_)  => println("read")
+//     Err(e) => println(e.message())
+// ```
+impl Error for PoError
+    // Panics with `not implemented` until the bodies land.
+    fn message(self) -> Str
+        todo("i18n-nv.PoError.message")
+
+// What a conversion could not carry across.
+pub enum PoLimit
+    // An entry whose `msgstr` is empty: untranslated, and gettext
+    // falls back to the `msgid`. A converted resource omits the
+    // message entirely so that `i18nbundle`'s chain does the falling
+    // back, and this note says which ones.
+    PoUntranslated(id: Str)
+    // A `#, fuzzy` entry, skipped.
+    PoFuzzySkipped(id: Str)
+    // The plural expression does not partition counts the way CLDR's
+    // categories do, so an index maps to more than one category or to
+    // none. Carries the index and what it covered.
+    PoAmbiguousCategory(index: Int, covers: [i18nplural.I18nCategory])
+    // A `%s`-style format string. gettext's placeholders are
+    // POSITIONAL and unnamed; FTL's are named, so the conversion has
+    // to invent names — `$arg1`, `$arg2` — and the program then has to
+    // pass them under those names. Every converted format string is
+    // one of these.
+    PoPositionalPlaceholder(id: Str, count: Int)
+    // A `msgctxt`. FTL has no context, so the conversion folds it into
+    // the message id as `context.id`, and this says where.
+    PoContextFolded(context: Str, id: Str)
+
+// Read a `.po` file.
+//
+// ```novo
+// use i18npo
+//
+// match i18npo.read_catalogue("msgid \"hello\"\nmsgstr \"Hej\"\n")
+//     Ok(c)  => println(str.from_int(list.len(c.entries)))
+//     Err(_) => println("not a catalogue")
+// ```
+pub fn read_catalogue(text: Str) -> Result<PoCatalogue, PoError> []
+    todo("i18n-nv.i18npo.read_catalogue")
+
+// The line a read error was found on, for a caller reporting it
+// without matching on every variant.
+pub fn error_line(e: PoError) -> Int []
+    todo("i18n-nv.i18npo.error_line")
+
+// Parse a `Plural-Forms` header value into `nplurals` and the
+// expression.
+//
+// Published on its own because a project migrating wants to check its
+// headers before it converts anything, and because the expression is
+// the part that can genuinely fail to be readable.
+pub fn parse_plural_forms(header: Str) -> Result<(Int, PoPluralExpr), PoError> []
+    todo("i18n-nv.i18npo.parse_plural_forms")
+
+// Evaluate a plural expression for a count — the `msgstr[n]` index
+// gettext would use.
+//
+// The evaluator the module comment names. It cannot fail: C's
+// semantics make every subexpression an integer and division by zero
+// is not expressible in the grammar.
+pub fn eval_plural(e: PoPluralExpr, n: Int) -> Int []
+    todo("i18n-nv.i18npo.eval_plural")
+
+// Which CLDR categories each `msgstr[n]` index covers, by evaluating
+// the expression over the counts CLDR's own rules distinguish.
+//
+// THE CALL THAT SAYS WHETHER A CONVERSION IS EXACT. An index that
+// covers one category converts cleanly; one that covers two or none is
+// a `PoAmbiguousCategory`, and the conversion reports it rather than
+// picking.
+pub fn category_map(c: PoCatalogue, locale: Str) -> [[i18nplural.I18nCategory]] []
+    todo("i18n-nv.i18npo.category_map")
+
+// Convert a catalogue into an FTL resource, with everything that did
+// not carry across listed beside it.
+//
+// The list is the point. A conversion that answered only a resource
+// would have silently dropped the fuzzy entries, folded every context
+// into an id and renamed every placeholder, and the translator would
+// find out from a bug report.
+pub fn to_resource(c: PoCatalogue, locale: Str) -> (ftlparse.FtlResource, [PoLimit]) []
+    todo("i18n-nv.i18npo.to_resource")
+
+// Append the FTL text a conversion would produce to `out` — for a
+// migration that converts once and commits the result, which is the
+// right way to migrate: the `.po` files stop being the source.
+pub fn to_ftl_into(out: [u8], c: PoCatalogue, locale: Str) -> ([u8], [PoLimit]) []
+    todo("i18n-nv.i18npo.to_ftl_into")
+
+// A header's value, or an empty string.
+pub fn header_of(c: PoCatalogue, name: Str) -> Str []
+    todo("i18n-nv.i18npo.header_of")
+
+// The entry with this context and id, or `None`. Both parts of the
+// key, because `msgctxt` is part of it.
+pub fn entry_of(c: PoCatalogue, context: Str, id: Str) -> ?PoEntry []
+    todo("i18n-nv.i18npo.entry_of")
+
+// The three Fluent features a `.po` file cannot express, as the text
+// a conversion report should carry: attributes, selectors on anything
+// but a count, and terms.
+//
+// Published as data rather than left in this comment so a migration
+// tool prints the same sentence this package would.
+pub fn unsupported_features() -> [Str] []
+    todo("i18n-nv.i18npo.unsupported_features")
