@@ -5,6 +5,10 @@ All notable changes to i18n-nv are recorded here. The format is
 package follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 with the pre-1.0 rule that a breaking change bumps the MINOR number.
 
+## 0.0.2 — 2026-09-15
+
+README rewritten to the package README style guide (docs/writing-a-readme.md); no change to the interface.
+
 ## 0.0.1 — 2026-09-11
 
 The **interface**: every signature and every effect row, and no bodies.
@@ -51,3 +55,33 @@ The **interface**: every signature and every effect row, and no bodies.
   a compiled string table, which is a different package.
 - **Two dependencies**, numfmt-nv and calendar-nv, both `core`. No
   clock anywhere: a relative time takes both instants.
+
+### Design notes
+
+Adding a locale is four rows and no new branch: a row in `i18nplural`'s
+rule table with the categories in CLDR's order and `I18nOther` last; a
+row in `i18nfmt`'s number and date symbol tables if they differ from
+English's; the tag added to `shipped_locales`; and a test case per
+category from CLDR's own sample sets. `pl`, whose `few` and `many`
+break any two-form design, and `ar`, which uses all six categories, are
+the two worth adding early.
+
+The locale data is bigger than the code and is not shipped whole. Six
+locales are rows; forty would be a data file, and the package would
+then need the tiering unicode-nv has, which costs an `I18nLocaleData`
+parameter on `rules_for`, `symbols_for` and `date_symbols_for`. That is
+a breaking change, so the implementation lane should decide before the
+bodies land rather than after.
+
+The consumers the surface was designed against: the project website and
+the registry's package pages, whose strings are English in templates
+today and which want `format_into` over the page buffer; a build step
+over a translation directory, which needs no application at all and is
+`parse_strict` plus `missing_against` plus `variable_drift`; and
+`std.cli`, whose help text, errors and prompts are the corpus Fluent is
+for, though a standard-library module cannot depend on an Orbit package
+so an application-shaped consumer comes first.
+
+`i18npo`'s bodies are not scheduled for 0.1.0. The interface is
+published because the shape is worth reviewing and because a converter
+written outside the package would be written once per project.

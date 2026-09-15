@@ -1,6 +1,6 @@
 [package]
 name        = "i18n-nv"
-version     = "0.0.1"
+version     = "0.0.2"
 description = "Project Fluent for novo-lang: FTL text parsed into a typed resource with messages, attributes, placeables and selectors; the CLDR plural categories with the shipped locales' rules as data; a bundle that resolves a message id and arguments into a caller's buffer; fallback chains across locales; and bidi isolation on by default.  Resolution NEVER FAILS — it answers the text it managed and the list of errors beside it, because a localisation bug ships at 3am in a locale nobody on the team reads.  Interface only — every body is a todo()."
 license     = "Apache-2.0"
 
