@@ -5,6 +5,13 @@ All notable changes to i18n-nv are recorded here. The format is
 package follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 with the pre-1.0 rule that a breaking change bumps the MINOR number.
 
+## 0.0.3 — 2026-09-25
+
+The lock names numfmt-nv 0.1.3, whose writers declare their buffer
+parameter `var`, so a build of this package under toolchain 0.10.0 no
+longer reports that dependency's earlier release.  No declaration of
+this package changed.
+
 ## 0.0.2 — 2026-09-15
 
 README rewritten to the package README style guide (docs/writing-a-readme.md); no change to the interface.
