@@ -216,7 +216,7 @@ pub fn chain(bundles: [I18nBundle]) -> I18nChain []
 // let r = ftlparse.parse("hello = Hello, { \$name }!")
 // let b = i18nbundle.with_resource(
 //     i18nbundle.bundle("en", i18nbundle.test_options("en")), r.0)
-// let out = i18nbundle.format(b, "hello", [I18nArgStr("name", "Klaus")])
+// let out = i18nbundle.format(b, "hello", [I18nArgStr("name", "Ada")])
 // println(out.text)
 // ```
 pub fn format(b: I18nBundle, id: Str, args: [I18nArg]) -> I18nResolved []

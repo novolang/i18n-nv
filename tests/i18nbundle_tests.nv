@@ -28,10 +28,10 @@ fn en_bundle(ftl: Str) -> i18nbundle.I18nBundle
 @test
 fn test_the_ordinary_case_is_text_and_no_errors() [io]
     let b = en_bundle("hello = Hello, { \$name }!\n")
-    let out = i18nbundle.format(b, "hello", [I18nArgStr("name", "Klaus")])
+    let out = i18nbundle.format(b, "hello", [I18nArgStr("name", "Ada")])
 
     test.case("the text is the message with its placeable filled in")
-    test.assert(out.text == "Hello, Klaus!")
+    test.assert(out.text == "Hello, Ada!")
 
     test.case("and nothing went wrong")
     test.assert(i18nbundle.is_clean(out))
@@ -165,7 +165,7 @@ fn test_bidi_isolation_is_on_by_default_and_off_only_for_a_test() [io]
     let opts = i18nbundle.default_options("en")
     let b = i18nbundle.with_resource(i18nbundle.bundle("en", opts),
                                      ftlparse.parse("hi = Hi { \$n }\n").0)
-    let out = i18nbundle.format(b, "hi", [I18nArgStr("n", "Klaus")])
+    let out = i18nbundle.format(b, "hi", [I18nArgStr("n", "Ada")])
     test.assert(str.index(out.text, "\u{2068}") != None)
     test.assert(str.index(out.text, "\u{2069}") != None)
 
